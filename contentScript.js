@@ -37,6 +37,10 @@
         border-radius: 2px;
       }
 
+      .${ANCHOR_CLASS}.has-link {
+        cursor: pointer;
+      }
+
       #${TOOLTIP_ID} {
         position: fixed;
         z-index: 2147483647;
@@ -48,16 +52,46 @@
         font-size: 12px;
         line-height: 1.4;
         box-shadow: 0 8px 24px rgba(0, 0, 0, 0.28);
-        pointer-events: none;
+        pointer-events: auto;
         opacity: 0;
         transform: translateY(4px);
         transition: opacity 120ms ease, transform 120ms ease;
-        white-space: pre-wrap;
+        white-space: normal;
       }
 
       #${TOOLTIP_ID}.visible {
         opacity: 1;
         transform: translateY(0);
+      }
+
+      #${TOOLTIP_ID} p {
+        margin: 0 0 6px;
+      }
+
+      #${TOOLTIP_ID} p:last-child {
+        margin-bottom: 0;
+      }
+
+      #${TOOLTIP_ID} a {
+        color: #93c5fd;
+        text-decoration: underline;
+      }
+
+      #${TOOLTIP_ID} code {
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
+          "Liberation Mono", "Courier New", monospace;
+        font-size: 11px;
+        background: rgba(255, 255, 255, 0.12);
+        border-radius: 4px;
+        padding: 1px 4px;
+      }
+
+      #${TOOLTIP_ID} strong {
+        font-weight: 600;
+      }
+
+      #${TOOLTIP_ID} em {
+        font-style: italic;
       }
     `;
     document.documentElement.appendChild(style);
@@ -70,6 +104,17 @@
     tooltip = document.createElement("div");
     tooltip.id = TOOLTIP_ID;
     document.documentElement.appendChild(tooltip);
+
+    // Keep tooltip visible while hovered so links can be clicked.
+    tooltip.addEventListener("mouseenter", () => {
+      if (window.__siteNotesHideTooltipTimeout) {
+        clearTimeout(window.__siteNotesHideTooltipTimeout);
+      }
+    });
+    tooltip.addEventListener("mouseleave", () => {
+      tooltip.classList.remove("visible");
+    });
+
     return tooltip;
   }
 
@@ -146,7 +191,7 @@
     return best;
   }
 
-  function wrapTextRange(node, start, length, tooltipText) {
+  function wrapTextRange(node, start, length, tooltipHtml, firstLink) {
     try {
       const fullText = node.nodeValue || "";
       const beforeText = fullText.slice(0, start);
@@ -159,7 +204,11 @@
 
       const wrapper = document.createElement("span");
       wrapper.className = ANCHOR_CLASS;
-      wrapper.dataset.noteTooltip = tooltipText;
+      wrapper.dataset.noteTooltipHtml = tooltipHtml;
+      if (firstLink) {
+        wrapper.classList.add("has-link");
+        wrapper.dataset.noteFirstLink = firstLink;
+      }
       wrapper.appendChild(matchNode);
 
       const fragment = document.createDocumentFragment();
@@ -179,7 +228,10 @@
 
     document.querySelectorAll(`.${ANCHOR_CLASS}`).forEach((el) => {
       el.addEventListener("mouseenter", (event) => {
-        tooltip.textContent = el.dataset.noteTooltip || "Attached note";
+        if (window.__siteNotesHideTooltipTimeout) {
+          clearTimeout(window.__siteNotesHideTooltipTimeout);
+        }
+        tooltip.innerHTML = el.dataset.noteTooltipHtml || "Attached note";
         tooltip.classList.add("visible");
         moveTooltip(tooltip, event);
       });
@@ -189,7 +241,21 @@
       });
 
       el.addEventListener("mouseleave", () => {
-        tooltip.classList.remove("visible");
+        window.__siteNotesHideTooltipTimeout = window.setTimeout(() => {
+          tooltip.classList.remove("visible");
+        }, 120);
+      });
+
+      el.addEventListener("click", (event) => {
+        const firstLink = el.dataset.noteFirstLink;
+        if (!firstLink) return;
+
+        // If the underlying page text is already part of a native link, don't intercept.
+        if (el.closest("a")) return;
+
+        event.preventDefault();
+        event.stopPropagation();
+        window.open(firstLink, "_blank", "noopener,noreferrer");
       });
     });
   }
@@ -199,12 +265,87 @@
     return text.length > maxLength ? `${text.slice(0, maxLength - 1)}...` : text;
   }
 
-  function buildTooltipText(note) {
+  function escapeHtml(text) {
+    return String(text || "")
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/\"/g, "&quot;")
+      .replace(/'/g, "&#39;");
+  }
+
+  function sanitizeUrl(url) {
+    const trimmed = String(url || "").trim();
+    if (!trimmed) return "#";
+    if (/^(https?:|mailto:)/i.test(trimmed)) return trimmed;
+    if (/^www\./i.test(trimmed)) return `https://${trimmed}`;
+    return "#";
+  }
+
+  function extractFirstLinkFromMarkdown(content) {
+    const text = String(content || "");
+
+    const mdMatch = text.match(/\[[^\]]+\]\(([^)]+)\)/);
+    if (mdMatch && mdMatch[1]) {
+      const safe = sanitizeUrl(mdMatch[1]);
+      if (safe !== "#") return safe;
+    }
+
+    const plainMatch = text.match(/https?:\/\/[^\s)]+/);
+    if (plainMatch && plainMatch[0]) {
+      const safe = sanitizeUrl(plainMatch[0]);
+      if (safe !== "#") return safe;
+    }
+
+    const wwwMatch = text.match(/\bwww\.[^\s)]+/i);
+    if (wwwMatch && wwwMatch[0]) {
+      const safe = sanitizeUrl(wwwMatch[0]);
+      if (safe !== "#") return safe;
+    }
+
+    return "";
+  }
+
+  function renderInlineMarkdown(text) {
+    let html = escapeHtml(text || "");
+
+    html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_, label, url) => {
+      const safe = sanitizeUrl(url);
+      if (safe === "#") return label;
+      return `<a href="${safe}" target="_blank" rel="noopener noreferrer">${label}</a>`;
+    });
+
+    html = html.replace(/(^|\s)(https?:\/\/[^\s<]+)/g, (m, prefix, url) => {
+      const safe = sanitizeUrl(url);
+      return `${prefix}<a href="${safe}" target="_blank" rel="noopener noreferrer">${url}</a>`;
+    });
+
+    html = html.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+    html = html.replace(/\*([^*]+)\*/g, "<em>$1</em>");
+    html = html.replace(/`([^`]+)`/g, "<code>$1</code>");
+    return html;
+  }
+
+  function renderBasicMarkdown(text) {
+    const normalized = String(text || "").replace(/\r\n/g, "\n");
+    if (!normalized.trim()) return "";
+
+    return normalized
+      .split(/\n{2,}/)
+      .map((block) => `<p>${renderInlineMarkdown(block).replace(/\n/g, "<br>")}</p>`)
+      .join("");
+  }
+
+  function buildTooltipHtml(note) {
     const preview = trimToLength(note.content || "", 220);
-    const tags = Array.isArray(note.tags) && note.tags.length
-      ? `\nTags: ${note.tags.map((t) => `#${t}`).join(" ")}`
+    const renderedPreview = renderBasicMarkdown(preview || "Attached note");
+    const tagsHtml = Array.isArray(note.tags) && note.tags.length
+      ? `<p><strong>Tags:</strong> ${note.tags
+          .map((t) => `#${escapeHtml(t)}`)
+          .join(" ")}</p>`
       : "";
-    return preview || `Attached note${tags}`;
+
+    return `${renderedPreview}${tagsHtml}`;
   }
 
   async function loadAnchoredNotesForPage() {
@@ -243,7 +384,8 @@
         match.node,
         match.index,
         note.anchor.exact.length,
-        buildTooltipText(note)
+        buildTooltipHtml(note),
+        extractFirstLinkFromMarkdown(note.content)
       );
     });
 

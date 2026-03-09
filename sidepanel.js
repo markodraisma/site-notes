@@ -5,6 +5,7 @@ let currentNotes = [];
 let availableTags = [];
 let pendingSelectionAnchor = null;
 let anchorStateByNoteId = {};
+let pendingAttachContext = null;
 
 const TAGS_STORAGE_KEY = "__siteNotesTags__";
 
@@ -140,6 +141,18 @@ function setupEventListeners() {
   document
     .getElementById("saveEditTagBtn")
     .addEventListener("click", saveEditedTag);
+  document
+    .getElementById("closeAttachNoteBtn")
+    .addEventListener("click", closeAttachNoteModal);
+  document
+    .getElementById("cancelAttachNoteBtn")
+    .addEventListener("click", closeAttachNoteModal);
+  document
+    .getElementById("attachAsPageBtn")
+    .addEventListener("click", () => completeAttachExistingNote("page"));
+  document
+    .getElementById("attachToSelectionBtn")
+    .addEventListener("click", () => completeAttachExistingNote("selection"));
   document
     .getElementById("editTagNameInput")
     .addEventListener("keydown", (e) => {
@@ -298,7 +311,12 @@ function createNoteHTML(note, index) {
         </div>
       </div>
       <div class="note-content">
-        <textarea class="note-textarea" readonly>${note.content}</textarea>
+        <div class="note-markdown" data-role="content-display">${renderBasicMarkdown(
+          note.content || ""
+        )}</div>
+        <textarea class="note-textarea" data-role="content-editor" style="display: none;">${escapeHtml(
+          note.content || ""
+        )}</textarea>
         <div class="tags-container" data-role="tags-display">
           ${(note.tags || []).map((tag) => `<span class="tag">#${tag}</span>`).join("")}
         </div>
@@ -332,7 +350,8 @@ function attachNoteEventListeners(index) {
   const noteCard = document.querySelector(`.note-card[data-index="${index}"]`);
   if (!noteCard) return;
 
-  const textarea = noteCard.querySelector(".note-textarea");
+  const contentDisplay = noteCard.querySelector('[data-role="content-display"]');
+  const textarea = noteCard.querySelector('[data-role="content-editor"]');
   const tagsDisplay = noteCard.querySelector('[data-role="tags-display"]');
   const tagsEditor = noteCard.querySelector('[data-role="tags-editor"]');
   const tagsInput = tagsEditor?.querySelector("input");
@@ -355,13 +374,14 @@ function attachNoteEventListeners(index) {
   }
 
   editBtn.addEventListener("click", async () => {
-    const isEditing = textarea.hasAttribute("readonly");
+    const isEditing = textarea.style.display === "none";
 
     if (isEditing) {
       // Enter edit mode
       originalContent = textarea.value;
       originalTags = getTagsFromEditor(tagsEditor);
-      textarea.removeAttribute("readonly");
+      if (contentDisplay) contentDisplay.style.display = "none";
+      textarea.style.display = "block";
       textarea.focus();
       if (tagsDisplay) tagsDisplay.style.display = "none";
       if (tagsEditor) tagsEditor.style.display = "flex";
@@ -382,7 +402,8 @@ function attachNoteEventListeners(index) {
       } else {
         loadNotes();
       }
-      textarea.setAttribute("readonly", "true");
+      textarea.style.display = "none";
+      if (contentDisplay) contentDisplay.style.display = "block";
       if (tagsDisplay) tagsDisplay.style.display = "";
       if (tagsEditor) tagsEditor.style.display = "none";
       if (tagsPicker) tagsPicker.style.display = "none";
@@ -581,14 +602,50 @@ async function attachExistingNote(index) {
   if (!source) return;
 
   const selectionAnchor = await captureSelectionAnchorFromActiveTab();
-  let anchor = null;
 
-  if (selectionAnchor?.exact) {
-    const useSelection = confirm(
-      "A text selection is available on the current page. Attach this note to selected text?\n\nPress OK for selected text, Cancel for page-level note."
-    );
-    anchor = useSelection ? selectionAnchor : null;
+  pendingAttachContext = {
+    source,
+    selectionAnchor,
+  };
+  openAttachNoteModal();
+}
+
+function openAttachNoteModal() {
+  const modal = document.getElementById("attachNoteModal");
+  const text = document.getElementById("attachNoteModalText");
+  const selectionBtn = document.getElementById("attachToSelectionBtn");
+
+  const hasSelection = Boolean(pendingAttachContext?.selectionAnchor?.exact);
+  if (text) {
+    text.textContent = hasSelection
+      ? "A text selection is available. Choose where to attach this note."
+      : "No text selection detected. You can attach this note to the current page.";
   }
+
+  if (selectionBtn) {
+    selectionBtn.disabled = !hasSelection;
+    selectionBtn.title = hasSelection
+      ? "Attach to selected text"
+      : "Select text on the page first";
+  }
+
+  modal?.classList.add("active");
+}
+
+function closeAttachNoteModal() {
+  document.getElementById("attachNoteModal")?.classList.remove("active");
+  pendingAttachContext = null;
+}
+
+async function completeAttachExistingNote(mode) {
+  if (!pendingAttachContext?.source) {
+    closeAttachNoteModal();
+    return;
+  }
+
+  const { source, selectionAnchor } = pendingAttachContext;
+  const anchor =
+    mode === "selection" && selectionAnchor?.exact ? selectionAnchor : null;
 
   const attachedNote = {
     content: source.content,
@@ -611,6 +668,7 @@ async function attachExistingNote(index) {
   await ensureTagsInCatalog(attachedNote.tags);
   await refreshTagCatalog();
   await loadNotes(document.getElementById("searchInput").value || "");
+  closeAttachNoteModal();
 }
 
 // Utility functions
@@ -706,6 +764,48 @@ function escapeHtml(text) {
     .replace(/>/g, "&gt;")
     .replace(/\"/g, "&quot;")
     .replace(/'/g, "&#39;");
+}
+
+function sanitizeUrl(url) {
+  const trimmed = String(url || "").trim();
+  if (!trimmed) return "#";
+  if (/^(https?:|mailto:)/i.test(trimmed)) return trimmed;
+  if (/^www\./i.test(trimmed)) return `https://${trimmed}`;
+  return "#";
+}
+
+function renderInlineMarkdown(text) {
+  let html = escapeHtml(text || "");
+
+  // Markdown links: [label](https://example.com)
+  html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_, label, url) => {
+    const safe = sanitizeUrl(url);
+    if (safe === "#") return label;
+    return `<a href="${safe}" target="_blank" rel="noopener noreferrer">${label}</a>`;
+  });
+
+  // Auto-link plain URLs
+  html = html.replace(/(^|\s)(https?:\/\/[^\s<]+)/g, (m, prefix, url) => {
+    const safe = sanitizeUrl(url);
+    return `${prefix}<a href="${safe}" target="_blank" rel="noopener noreferrer">${url}</a>`;
+  });
+
+  // Basic emphasis
+  html = html.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+  html = html.replace(/\*([^*]+)\*/g, "<em>$1</em>");
+  html = html.replace(/`([^`]+)`/g, "<code>$1</code>");
+
+  return html;
+}
+
+function renderBasicMarkdown(text) {
+  const normalized = String(text || "").replace(/\r\n/g, "\n");
+  if (!normalized.trim()) return "";
+
+  return normalized
+    .split(/\n{2,}/)
+    .map((block) => `<p>${renderInlineMarkdown(block).replace(/\n/g, "<br>")}</p>`)
+    .join("");
 }
 
 function renderSelectionAnchorHint() {

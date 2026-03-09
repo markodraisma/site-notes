@@ -169,6 +169,45 @@
         border-radius: 4px;
       }
 
+      .note-markdown {
+        min-height: 24px;
+        padding: 8px;
+        font-size: 0.875rem;
+        line-height: 1.5;
+        white-space: normal;
+        word-break: break-word;
+      }
+
+      .note-markdown p {
+        margin: 0 0 8px;
+      }
+
+      .note-markdown p:last-child {
+        margin-bottom: 0;
+      }
+
+      .note-markdown a {
+        color: var(--primary-color);
+        text-decoration: underline;
+      }
+
+      .note-markdown code {
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
+          "Liberation Mono", "Courier New", monospace;
+        font-size: 0.8rem;
+        background: #f3f4f6;
+        border-radius: 4px;
+        padding: 1px 4px;
+      }
+
+      .note-markdown strong {
+        font-weight: 600;
+      }
+
+      .note-markdown em {
+        font-style: italic;
+      }
+
       .note-footer {
         padding: 8px 12px;
         border-top: 1px solid var(--border-color);
@@ -743,6 +782,28 @@
         <div class="modal-footer">
           <button class="btn btn-secondary" id="cancelEditTagBtn">Cancel</button>
           <button class="btn btn-primary" id="saveEditTagBtn">Save</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Attach Note Modal -->
+    <div class="modal" id="attachNoteModal">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h3>Attach Existing Note</h3>
+          <button class="note-action-btn" id="closeAttachNoteBtn">
+            <i class="fas fa-times"></i>
+          </button>
+        </div>
+        <div class="modal-body">
+          <p id="attachNoteModalText" class="section-text">
+            Choose how to attach this note to the current page.
+          </p>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-secondary" id="cancelAttachNoteBtn">Cancel</button>
+          <button class="btn btn-secondary" id="attachAsPageBtn">Attach to Page</button>
+          <button class="btn btn-primary" id="attachToSelectionBtn">Attach to Selected Text</button>
         </div>
       </div>
     </div>
