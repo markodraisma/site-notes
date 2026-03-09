@@ -419,6 +419,109 @@
         font-size: 0.75rem;
         color: #6b7280;
       }
+
+      .section-title {
+        margin: 0 0 8px;
+        font-size: 0.95rem;
+      }
+
+      .section-text {
+        margin: 0 0 12px;
+        color: #6b7280;
+        font-size: 0.85rem;
+      }
+
+      .available-tags {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        margin: 8px 0 0;
+      }
+
+      .available-tag-btn {
+        border: 1px solid var(--border-color);
+        background: white;
+        color: #374151;
+        border-radius: 999px;
+        padding: 4px 10px;
+        font-size: 0.75rem;
+        cursor: pointer;
+      }
+
+      .available-tag-btn.active {
+        border-color: var(--primary-color);
+        color: var(--primary-color);
+        background: rgba(37, 99, 235, 0.08);
+      }
+
+      .tag-manager-toolbar {
+        display: grid;
+        grid-template-columns: 1fr 1fr auto;
+        gap: 8px;
+        margin-bottom: 12px;
+      }
+
+      .tag-manager-input,
+      .tag-manager-select {
+        border: 1px solid var(--border-color);
+        border-radius: 6px;
+        padding: 8px;
+        font-size: 0.85rem;
+      }
+
+      .tag-manager-list {
+        max-height: 45vh;
+        overflow-y: auto;
+        border: 1px solid var(--border-color);
+        border-radius: 8px;
+      }
+
+      .tag-manager-item {
+        display: grid;
+        grid-template-columns: 1fr auto auto;
+        gap: 8px;
+        align-items: center;
+        border-bottom: 1px solid var(--border-color);
+        padding: 10px;
+      }
+
+      .tag-manager-item:last-child {
+        border-bottom: none;
+      }
+
+      .tag-manager-name {
+        font-size: 0.85rem;
+        word-break: break-all;
+      }
+
+      .tag-manager-empty {
+        text-align: center;
+        color: #6b7280;
+        padding: 16px;
+        font-size: 0.85rem;
+      }
+
+      .tag-manager-actions {
+        display: flex;
+        gap: 6px;
+      }
+
+      .btn-link {
+        border: none;
+        background: none;
+        color: var(--primary-color);
+        cursor: pointer;
+        font-size: 0.8rem;
+        padding: 0;
+      }
+
+      .btn-link.delete {
+        color: var(--danger-color);
+      }
+
+      .note-tag-picker {
+        margin-top: 8px;
+      }
     </style>
   </head>
   <body>
@@ -477,6 +580,7 @@
               style="border: none; outline: none; flex: 1"
             />
           </div>
+          <div id="noteTagPicker" class="available-tags note-tag-picker"></div>
           <textarea
             id="newNoteContent"
             class="note-textarea"
@@ -500,6 +604,16 @@
           </button>
         </div>
         <div class="modal-body">
+          <h4 class="section-title">Tags</h4>
+          <p class="section-text">Create nested tags using <code>/</code> like <code>work/project</code>.</p>
+          <button
+            class="btn btn-secondary"
+            id="manageTagsBtn"
+            style="margin-bottom: 20px"
+          >
+            Manage Tags
+          </button>
+
           <h4>Data Management</h4>
           <p>Warning: This action cannot be undone.</p>
           <button class="btn btn-danger" id="resetDataBtn">
@@ -529,6 +643,36 @@
           <a href="https://github.com/VishwaGauravIn/site-notes" target="_blank"
             >GitHub</a
           >
+        </div>
+      </div>
+    </div>
+
+    <!-- Manage Tags Modal -->
+    <div class="modal" id="tagsManagerModal">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h3>Manage Tags</h3>
+          <button class="note-action-btn" id="closeTagsManagerBtn">
+            <i class="fas fa-times"></i>
+          </button>
+        </div>
+        <div class="modal-body">
+          <div class="tag-manager-toolbar">
+            <select id="newTagParentSelect" class="tag-manager-select">
+              <option value="">No parent</option>
+            </select>
+            <input
+              id="newTagNameInput"
+              class="tag-manager-input"
+              type="text"
+              placeholder="New tag name"
+            />
+            <button class="btn btn-primary" id="createTagBtn">Add</button>
+          </div>
+          <div id="tagsManagerList" class="tag-manager-list"></div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-secondary" id="doneTagsManagerBtn">Done</button>
         </div>
       </div>
     </div>

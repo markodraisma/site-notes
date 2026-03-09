@@ -2,6 +2,9 @@ let currentUrl = "";
 let currentHostname = "";
 let viewMode = "page"; // "page", "domain", or "all"
 let currentNotes = [];
+let availableTags = [];
+
+const TAGS_STORAGE_KEY = "__siteNotesTags__";
 
 // Initialize the extension
 async function initialize() {
@@ -27,8 +30,9 @@ async function initialize() {
     "favicon"
   ).src = `https://www.google.com/s2/favicons?domain=${currentHostname}`;
 
-  loadNotes();
   setupEventListeners();
+  await refreshTagCatalog();
+  await loadNotes();
 }
 
 function isYouTubeVideo(url) {
@@ -41,6 +45,10 @@ function isYouTubeVideo(url) {
 
 // Set up all event listeners
 function setupEventListeners() {
+  // Avoid duplicate listeners if initialize runs more than once
+  if (window.__siteNotesListenersBound) return;
+  window.__siteNotesListenersBound = true;
+
   // View toggle buttons
   document.getElementById("pageNotesBtn").addEventListener("click", () => {
     viewMode = "page";
@@ -73,7 +81,7 @@ function setupEventListeners() {
     .getElementById("addNoteBtn")
     .addEventListener("click", openNoteModal);
 
-  // Modal buttons
+  // Note modal buttons
   document
     .getElementById("closeModalBtn")
     .addEventListener("click", closeNoteModal);
@@ -102,13 +110,37 @@ function setupEventListeners() {
     .getElementById("importFileInput")
     .addEventListener("change", importData);
 
-  // Tags input
+  // Global tag manager
+  document
+    .getElementById("manageTagsBtn")
+    .addEventListener("click", openTagsManagerModal);
+  document
+    .getElementById("closeTagsManagerBtn")
+    .addEventListener("click", closeTagsManagerModal);
+  document
+    .getElementById("doneTagsManagerBtn")
+    .addEventListener("click", closeTagsManagerModal);
+  document
+    .getElementById("createTagBtn")
+    .addEventListener("click", createTagFromManager);
+  document
+    .getElementById("newTagNameInput")
+    .addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        createTagFromManager();
+      }
+    });
+
+  // New note tags input
   const tagsInput = document.querySelector("#tagsInput input");
-  tagsInput.addEventListener("keydown", handleTagInput);
+  if (tagsInput) {
+    tagsInput.addEventListener("keydown", handleTagInput);
+  }
 
   // Tab changes
   chrome.tabs.onActivated.addListener(initialize);
-  chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+  chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
     if (changeInfo.url) {
       initialize();
     }
@@ -141,7 +173,7 @@ async function loadNotes(searchTerm = "") {
     filteredNotes = filteredNotes.filter(
       (note) =>
         note.content.toLowerCase().includes(term) ||
-        note.tags?.some((tag) => tag.toLowerCase().includes(term))
+        (note.tags || []).some((tag) => tag.toLowerCase().includes(term))
     );
   }
 
@@ -156,7 +188,10 @@ async function loadNotes(searchTerm = "") {
 async function getAllNotes() {
   try {
     const data = await chrome.storage.local.get(null);
-    return Object.values(data).flat();
+    return Object.entries(data)
+      .filter(([key, value]) => key !== TAGS_STORAGE_KEY && Array.isArray(value))
+      .flatMap(([, value]) => value)
+      .filter((note) => note && typeof note === "object" && note.url && note.content);
   } catch (error) {
     console.error("Error getting notes:", error);
     return [];
@@ -224,17 +259,19 @@ function createNoteHTML(note, index) {
       </div>
       <div class="note-content">
         <textarea class="note-textarea" readonly>${note.content}</textarea>
-        ${
-          note.tags?.length
-            ? `
-          <div class="tags-container">
-            ${note.tags
-              .map((tag) => `<span class="tag">#${tag}</span>`)
-              .join("")}
-          </div>
-        `
-            : ""
-        }
+        <div class="tags-container" data-role="tags-display">
+          ${(note.tags || []).map((tag) => `<span class="tag">#${tag}</span>`).join("")}
+        </div>
+        <div class="tags-input" data-role="tags-editor" style="display: none;">
+          ${(note.tags || [])
+            .map(
+              (tag) =>
+                `<span class="tag">#${tag}<button type="button" title="Remove tag">&times;</button></span>`
+            )
+            .join("")}
+          <input type="text" placeholder="Add tags (press Enter)" style="border: none; outline: none; flex: 1;">
+        </div>
+        <div class="available-tags" data-role="tags-picker" style="display: none;"></div>
       </div>
       <div class="note-footer">
         <span class="timestamp">Created: ${created}</span>
@@ -250,27 +287,52 @@ function attachNoteEventListeners(index) {
   if (!noteCard) return;
 
   const textarea = noteCard.querySelector(".note-textarea");
+  const tagsDisplay = noteCard.querySelector('[data-role="tags-display"]');
+  const tagsEditor = noteCard.querySelector('[data-role="tags-editor"]');
+  const tagsInput = tagsEditor?.querySelector("input");
+  const tagsPicker = noteCard.querySelector('[data-role="tags-picker"]');
   const editBtn = noteCard.querySelector(".edit-btn");
   const deleteBtn = noteCard.querySelector(".delete-btn");
   let originalContent;
+  let originalTags = [];
 
-  editBtn.addEventListener("click", () => {
+  if (tagsInput) {
+    tagsInput.addEventListener("keydown", handleTagInput);
+  }
+  attachTagDeleteHandlers(tagsEditor);
+
+  editBtn.addEventListener("click", async () => {
     const isEditing = textarea.hasAttribute("readonly");
 
     if (isEditing) {
       // Enter edit mode
       originalContent = textarea.value;
+      originalTags = getTagsFromEditor(tagsEditor);
       textarea.removeAttribute("readonly");
       textarea.focus();
+      if (tagsDisplay) tagsDisplay.style.display = "none";
+      if (tagsEditor) tagsEditor.style.display = "flex";
+      if (tagsPicker) {
+        tagsPicker.style.display = "flex";
+        buildTagPicker(tagsPicker, tagsEditor);
+      }
       editBtn.innerHTML = '<i class="fas fa-save"></i>';
       editBtn.title = "Save";
     } else {
       // Save changes
       const newContent = textarea.value.trim();
-      if (newContent !== originalContent) {
-        saveNoteEdit(index, newContent);
+      const newTags = getTagsFromEditor(tagsEditor);
+      const contentChanged = newContent !== originalContent;
+      const tagsChanged = !areTagArraysEqual(newTags, originalTags);
+      if (contentChanged || tagsChanged) {
+        await saveNoteEdit(index, newContent, newTags);
+      } else {
+        loadNotes();
       }
       textarea.setAttribute("readonly", "true");
+      if (tagsDisplay) tagsDisplay.style.display = "";
+      if (tagsEditor) tagsEditor.style.display = "none";
+      if (tagsPicker) tagsPicker.style.display = "none";
       editBtn.innerHTML = '<i class="fas fa-pen"></i>';
       editBtn.title = "Edit";
     }
@@ -284,8 +346,10 @@ function attachNoteEventListeners(index) {
 }
 
 // Modal functions
-function openNoteModal() {
+async function openNoteModal() {
   document.getElementById("noteModal").classList.add("active");
+  await refreshTagCatalog();
+  renderNewNoteTagPicker();
   document.getElementById("newNoteContent").focus();
 }
 
@@ -295,6 +359,29 @@ function closeNoteModal() {
   document.getElementById("tagsInput").innerHTML = `
     <input type="text" placeholder="Add tags (press Enter)" style="border: none; outline: none; flex: 1;">
   `;
+  const input = document.querySelector("#tagsInput input");
+  if (input) {
+    input.addEventListener("keydown", handleTagInput);
+  }
+  document.getElementById("noteTagPicker").innerHTML = "";
+}
+
+function openSettingsModal() {
+  document.getElementById("settingsModal").classList.add("active");
+}
+
+function closeSettingsModal() {
+  document.getElementById("settingsModal").classList.remove("active");
+}
+
+async function openTagsManagerModal() {
+  await refreshTagCatalog();
+  renderTagsManager();
+  document.getElementById("tagsManagerModal").classList.add("active");
+}
+
+function closeTagsManagerModal() {
+  document.getElementById("tagsManagerModal").classList.remove("active");
 }
 
 // Save functions
@@ -302,9 +389,7 @@ async function saveNewNote() {
   const content = document.getElementById("newNoteContent").value.trim();
   if (!content) return;
 
-  const tags = Array.from(
-    document.getElementById("tagsInput").querySelectorAll(".tag")
-  ).map((tag) => tag.textContent.slice(1)); // Remove # from tag
+  const tags = getTagsFromEditor(document.getElementById("tagsInput"));
 
   const newNote = {
     content,
@@ -319,16 +404,16 @@ async function saveNewNote() {
   notes.push(newNote);
 
   await chrome.storage.local.set({ [currentHostname]: notes });
+  await ensureTagsInCatalog(tags);
   closeNoteModal();
   loadNotes();
 }
 
-async function saveNoteEdit(index, content) {
+async function saveNoteEdit(index, content, tags) {
   const note = currentNotes[index];
-  const existingNotes = await chrome.storage.local.get(
-    new URL(note.url).hostname
-  );
-  const notes = existingNotes[new URL(note.url).hostname] || [];
+  const hostname = new URL(note.url).hostname;
+  const existingNotes = await chrome.storage.local.get(hostname);
+  const notes = existingNotes[hostname] || [];
 
   const noteIndex = notes.findIndex(
     (n) => n.url === note.url && n.createdAt === note.createdAt
@@ -338,10 +423,13 @@ async function saveNoteEdit(index, content) {
     notes[noteIndex] = {
       ...notes[noteIndex],
       content: content.trim(),
+      tags,
       modifiedAt: new Date().toISOString(),
     };
 
-    await chrome.storage.local.set({ [new URL(note.url).hostname]: notes });
+    await chrome.storage.local.set({ [hostname]: notes });
+    await ensureTagsInCatalog(tags);
+    await refreshTagCatalog();
     loadNotes();
   }
 }
@@ -359,6 +447,7 @@ async function deleteNote(index) {
   if (noteIndex !== -1) {
     notes.splice(noteIndex, 1);
     await chrome.storage.local.set({ [hostname]: notes });
+    await refreshTagCatalog();
     loadNotes();
   }
 }
@@ -371,20 +460,13 @@ function toggleActiveButton(activeId, inactiveIds) {
   );
 }
 
-function openSettingsModal() {
-  document.getElementById("settingsModal").classList.add("active");
-}
-
-function closeSettingsModal() {
-  document.getElementById("settingsModal").classList.remove("active");
-}
-
 function resetAllData() {
   if (
     confirm("Are you sure you want to reset all data? This cannot be undone.")
   ) {
-    chrome.storage.local.clear(() => {
-      loadNotes();
+    chrome.storage.local.clear(async () => {
+      availableTags = [];
+      await loadNotes();
       closeSettingsModal();
     });
   }
@@ -409,12 +491,13 @@ function importData(e) {
   if (!file) return;
 
   const reader = new FileReader();
-  reader.onload = (event) => {
+  reader.onload = async (event) => {
     try {
       const data = JSON.parse(event.target.result);
       chrome.storage.local.clear(() => {
-        chrome.storage.local.set(data, () => {
-          loadNotes();
+        chrome.storage.local.set(data, async () => {
+          await refreshTagCatalog();
+          await loadNotes();
           closeSettingsModal();
         });
       });
@@ -426,23 +509,329 @@ function importData(e) {
 }
 
 // Tag handling
+function normalizeTag(rawTag) {
+  if (!rawTag) return "";
+  const cleaned = rawTag.replace(/^#+/, "").trim();
+  if (!cleaned) return "";
+
+  const segments = cleaned
+    .split("/")
+    .map((segment) =>
+      segment
+        .trim()
+        .replace(/\s+/g, "-")
+        .replace(/[^a-zA-Z0-9_.-]/g, "-")
+        .replace(/-+/g, "-")
+        .replace(/^-|-$/g, "")
+    )
+    .filter(Boolean);
+
+  return segments.join("/");
+}
+
 function handleTagInput(e) {
   if (e.key === "Enter" && e.target.value.trim()) {
     e.preventDefault();
-    const tag = e.target.value.trim().replace(/\s+/g, "-");
-    const tagElement = document.createElement("span");
-    tagElement.className = "tag";
-    tagElement.innerHTML = `#${tag}<button type="button">&times;</button>`;
+    const tag = normalizeTag(e.target.value);
+    if (!tag) return;
 
-    // Add click handler directly to the button
-    const deleteBtn = tagElement.querySelector("button");
-    deleteBtn.addEventListener("click", function () {
-      tagElement.remove();
+    const existingTags = getTagsFromEditor(e.target.parentElement);
+    if (existingTags.includes(tag)) {
+      e.target.value = "";
+      return;
+    }
+
+    insertTagChip(e.target.parentElement, tag, e.target);
+    e.target.value = "";
+    syncTagPickerSelectionForContainer(e.target.parentElement);
+  }
+}
+
+function insertTagChip(container, tag, beforeElement) {
+  const tagElement = document.createElement("span");
+  tagElement.className = "tag";
+  tagElement.innerHTML = `#${tag}<button type="button">&times;</button>`;
+
+  const deleteBtn = tagElement.querySelector("button");
+  deleteBtn.addEventListener("click", function () {
+    tagElement.remove();
+    syncTagPickerSelectionForContainer(container);
+  });
+
+  container.insertBefore(tagElement, beforeElement || container.querySelector("input"));
+}
+
+function getTagsFromEditor(tagsEditor) {
+  if (!tagsEditor) return [];
+  return Array.from(tagsEditor.querySelectorAll(".tag"))
+    .map((tagElement) =>
+      normalizeTag(
+        tagElement.textContent.replace(/^#/, "").replace("×", "").trim()
+      )
+    )
+    .filter(Boolean);
+}
+
+function attachTagDeleteHandlers(tagsEditor) {
+  if (!tagsEditor) return;
+  tagsEditor.querySelectorAll(".tag button").forEach((button) => {
+    button.addEventListener("click", () => {
+      button.parentElement.remove();
+      syncTagPickerSelectionForContainer(tagsEditor);
+    });
+  });
+}
+
+function areTagArraysEqual(a, b) {
+  if (a.length !== b.length) return false;
+  return a.every((value, idx) => value === b[idx]);
+}
+
+async function refreshTagCatalog() {
+  const allNotes = await getAllNotes();
+  const noteTags = allNotes.flatMap((note) => note.tags || []);
+  const stored = await chrome.storage.local.get(TAGS_STORAGE_KEY);
+  const storedTags = Array.isArray(stored[TAGS_STORAGE_KEY])
+    ? stored[TAGS_STORAGE_KEY]
+    : [];
+
+  const merged = Array.from(
+    new Set([...storedTags, ...noteTags].map((tag) => normalizeTag(tag)).filter(Boolean))
+  ).sort((a, b) => a.localeCompare(b));
+
+  availableTags = merged;
+  await chrome.storage.local.set({ [TAGS_STORAGE_KEY]: merged });
+}
+
+async function ensureTagsInCatalog(tags) {
+  const normalizedIncoming = (tags || []).map((tag) => normalizeTag(tag)).filter(Boolean);
+  if (!normalizedIncoming.length) return;
+
+  const merged = Array.from(new Set([...availableTags, ...normalizedIncoming])).sort((a, b) =>
+    a.localeCompare(b)
+  );
+  availableTags = merged;
+  await chrome.storage.local.set({ [TAGS_STORAGE_KEY]: merged });
+}
+
+function renderNewNoteTagPicker() {
+  const picker = document.getElementById("noteTagPicker");
+  const editor = document.getElementById("tagsInput");
+  buildTagPicker(picker, editor);
+}
+
+function buildTagPicker(pickerContainer, editorContainer) {
+  if (!pickerContainer || !editorContainer) return;
+
+  if (!availableTags.length) {
+    pickerContainer.innerHTML = "";
+    return;
+  }
+
+  const selected = new Set(getTagsFromEditor(editorContainer));
+  pickerContainer.innerHTML = availableTags
+    .map((tag) => {
+      const activeClass = selected.has(tag) ? "active" : "";
+      return `<button type="button" class="available-tag-btn ${activeClass}" data-tag="${tag}">#${tag}</button>`;
+    })
+    .join("");
+
+  pickerContainer.querySelectorAll(".available-tag-btn").forEach((button) => {
+    button.addEventListener("click", () => {
+      const tag = button.dataset.tag;
+      const input = editorContainer.querySelector("input");
+      const editorTags = getTagsFromEditor(editorContainer);
+
+      if (editorTags.includes(tag)) {
+        const chip = Array.from(editorContainer.querySelectorAll(".tag")).find(
+          (el) => normalizeTag(el.textContent.replace(/^#/, "").replace("×", "").trim()) === tag
+        );
+        if (chip) chip.remove();
+      } else {
+        insertTagChip(editorContainer, tag, input);
+      }
+
+      syncTagPickerSelectionForContainer(editorContainer);
+    });
+  });
+}
+
+function syncTagPickerSelectionForContainer(editorContainer) {
+  const noteModalEditor = document.getElementById("tagsInput");
+  if (editorContainer === noteModalEditor) {
+    renderNewNoteTagPicker();
+    return;
+  }
+
+  const noteCard = editorContainer.closest(".note-card");
+  if (!noteCard) return;
+  const picker = noteCard.querySelector('[data-role="tags-picker"]');
+  if (!picker) return;
+  buildTagPicker(picker, editorContainer);
+}
+
+function getTagDisplayRows(tags) {
+  return tags
+    .slice()
+    .sort((a, b) => a.localeCompare(b))
+    .map((tag) => ({
+      fullTag: tag,
+      depth: tag.split("/").length - 1,
+    }));
+}
+
+function renderTagsManager() {
+  const list = document.getElementById("tagsManagerList");
+  const parentSelect = document.getElementById("newTagParentSelect");
+
+  parentSelect.innerHTML = '<option value="">No parent</option>';
+  availableTags
+    .slice()
+    .sort((a, b) => a.localeCompare(b))
+    .forEach((tag) => {
+      const depth = tag.split("/").length - 1;
+      const indent = "\u00A0\u00A0".repeat(depth);
+      parentSelect.insertAdjacentHTML(
+        "beforeend",
+        `<option value="${tag}">${indent}${tag}</option>`
+      );
     });
 
-    e.target.parentElement.insertBefore(tagElement, e.target);
-    e.target.value = "";
+  if (!availableTags.length) {
+    list.innerHTML = '<div class="tag-manager-empty">No tags yet.</div>';
+    return;
   }
+
+  const rows = getTagDisplayRows(availableTags);
+  list.innerHTML = rows
+    .map(
+      (row) => `
+        <div class="tag-manager-item" data-tag="${row.fullTag}">
+          <div class="tag-manager-name" style="padding-left: ${row.depth * 12}px">#${row.fullTag}</div>
+          <div class="tag-manager-actions">
+            <button type="button" class="btn-link rename-tag-btn">Rename</button>
+            <button type="button" class="btn-link delete delete-tag-btn">Delete</button>
+          </div>
+          <span></span>
+        </div>
+      `
+    )
+    .join("");
+
+  list.querySelectorAll(".rename-tag-btn").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const row = btn.closest(".tag-manager-item");
+      const oldTag = row?.dataset.tag;
+      if (!oldTag) return;
+
+      const rawNewTag = prompt("Rename tag", oldTag);
+      if (rawNewTag === null) return;
+      const newTag = normalizeTag(rawNewTag);
+
+      if (!newTag || newTag === oldTag) return;
+      if (availableTags.includes(newTag)) {
+        alert("That tag already exists.");
+        return;
+      }
+
+      await renameTagEverywhere(oldTag, newTag);
+    });
+  });
+
+  list.querySelectorAll(".delete-tag-btn").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const row = btn.closest(".tag-manager-item");
+      const tag = row?.dataset.tag;
+      if (!tag) return;
+
+      const ok = confirm(
+        `Delete tag '${tag}' everywhere? Nested tags under it will also be removed.`
+      );
+      if (!ok) return;
+
+      await deleteTagEverywhere(tag);
+    });
+  });
+}
+
+async function createTagFromManager() {
+  const parent = normalizeTag(document.getElementById("newTagParentSelect").value);
+  const name = normalizeTag(document.getElementById("newTagNameInput").value);
+
+  if (!name) return;
+
+  // Only take the final segment for the name field and compose full path using parent.
+  const leaf = name.includes("/") ? name.split("/").pop() : name;
+  const fullTag = parent ? `${parent}/${leaf}` : leaf;
+
+  if (availableTags.includes(fullTag)) {
+    alert("Tag already exists.");
+    return;
+  }
+
+  await ensureTagsInCatalog([fullTag]);
+  document.getElementById("newTagNameInput").value = "";
+  renderTagsManager();
+  renderNewNoteTagPicker();
+  loadNotes();
+}
+
+async function renameTagEverywhere(oldTag, newTag) {
+  await rewriteTagsEverywhere((tag) => {
+    if (tag === oldTag) return newTag;
+    if (tag.startsWith(`${oldTag}/`)) return `${newTag}${tag.slice(oldTag.length)}`;
+    return tag;
+  });
+}
+
+async function deleteTagEverywhere(targetTag) {
+  await rewriteTagsEverywhere((tag) => {
+    if (tag === targetTag || tag.startsWith(`${targetTag}/`)) return null;
+    return tag;
+  });
+}
+
+async function rewriteTagsEverywhere(mapTagFn) {
+  const data = await chrome.storage.local.get(null);
+  const updates = {};
+
+  Object.entries(data).forEach(([key, value]) => {
+    if (key === TAGS_STORAGE_KEY || !Array.isArray(value)) return;
+
+    let changedInBucket = false;
+    const updatedNotes = value.map((note) => {
+      const currentTags = (note.tags || []).map((tag) => normalizeTag(tag)).filter(Boolean);
+      const mapped = currentTags
+        .map((tag) => mapTagFn(tag))
+        .map((tag) => normalizeTag(tag))
+        .filter(Boolean);
+      const deduped = Array.from(new Set(mapped));
+      const changed = !areTagArraysEqual(deduped, currentTags);
+
+      if (changed) {
+        changedInBucket = true;
+        return {
+          ...note,
+          tags: deduped,
+          modifiedAt: new Date().toISOString(),
+        };
+      }
+      return note;
+    });
+
+    if (changedInBucket) {
+      updates[key] = updatedNotes;
+    }
+  });
+
+  if (Object.keys(updates).length) {
+    await chrome.storage.local.set(updates);
+  }
+
+  await refreshTagCatalog();
+  renderTagsManager();
+  renderNewNoteTagPicker();
+  loadNotes();
 }
 
 // Initialize the extension
