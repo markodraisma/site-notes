@@ -3,8 +3,16 @@ let currentHostname = "";
 let viewMode = "page"; // "page", "domain", or "all"
 let currentNotes = [];
 let availableTags = [];
+let pendingSelectionAnchor = null;
+let anchorStateByNoteId = {};
 
 const TAGS_STORAGE_KEY = "__siteNotesTags__";
+
+function bindTagInputListener(input) {
+  if (!input || input.dataset.tagInputBound === "1") return;
+  input.addEventListener("keydown", handleTagInput);
+  input.dataset.tagInputBound = "1";
+}
 
 // Initialize the extension
 async function initialize() {
@@ -124,6 +132,23 @@ function setupEventListeners() {
     .getElementById("createTagBtn")
     .addEventListener("click", createTagFromManager);
   document
+    .getElementById("closeEditTagBtn")
+    .addEventListener("click", closeEditTagModal);
+  document
+    .getElementById("cancelEditTagBtn")
+    .addEventListener("click", closeEditTagModal);
+  document
+    .getElementById("saveEditTagBtn")
+    .addEventListener("click", saveEditedTag);
+  document
+    .getElementById("editTagNameInput")
+    .addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        saveEditedTag();
+      }
+    });
+  document
     .getElementById("newTagNameInput")
     .addEventListener("keydown", (e) => {
       if (e.key === "Enter") {
@@ -134,9 +159,7 @@ function setupEventListeners() {
 
   // New note tags input
   const tagsInput = document.querySelector("#tagsInput input");
-  if (tagsInput) {
-    tagsInput.addEventListener("keydown", handleTagInput);
-  }
+  bindTagInputListener(tagsInput);
 
   // Tab changes
   chrome.tabs.onActivated.addListener(initialize);
@@ -179,6 +202,8 @@ async function loadNotes(searchTerm = "") {
 
   // Sort by most recent first
   filteredNotes.sort((a, b) => new Date(b.modifiedAt) - new Date(a.modifiedAt));
+
+  await refreshAnchorStates(filteredNotes);
 
   currentNotes = filteredNotes;
   displayNotes(filteredNotes);
@@ -233,6 +258,18 @@ function createNoteHTML(note, index) {
     ? noteUrl.hostname
     : noteUrl.pathname;
 
+  const noteId = getNoteId(note);
+  const anchorState = anchorStateByNoteId[noteId] || null;
+  const hasAnchor = Boolean(note.anchor?.exact);
+  const anchorSnippet = hasAnchor
+    ? escapeHtml(trimToLength(note.anchor.exact, 180))
+    : "";
+  const anchorStatusHtml = !hasAnchor
+    ? ""
+    : anchorState?.status === "missing"
+    ? '<div class="anchor-clue warning"><strong>Anchor changed.</strong> Selected text was not found in the current page DOM. This note is shown as a page-level fallback.</div>'
+    : '<div class="anchor-pill"><i class="fas fa-link"></i> Anchored to selected text</div>';
+
   return `
     <div class="note-card" data-index="${index}" data-url="${note.url}">
       <div class="note-header">
@@ -249,6 +286,9 @@ function createNoteHTML(note, index) {
           }
         </div>
         <div class="note-actions">
+          <button class="note-action-btn attach-btn" title="Attach to current page or selection">
+            <i class="fas fa-link"></i>
+          </button>
           <button class="note-action-btn edit-btn" title="Edit">
             <i class="fas fa-pen"></i>
           </button>
@@ -272,6 +312,12 @@ function createNoteHTML(note, index) {
           <input type="text" placeholder="Add tags (press Enter)" style="border: none; outline: none; flex: 1;">
         </div>
         <div class="available-tags" data-role="tags-picker" style="display: none;"></div>
+        ${anchorStatusHtml}
+        ${
+          hasAnchor
+            ? `<div class="anchor-quote" title="Selected text">"${anchorSnippet}"</div>`
+            : ""
+        }
       </div>
       <div class="note-footer">
         <span class="timestamp">Created: ${created}</span>
@@ -291,6 +337,7 @@ function attachNoteEventListeners(index) {
   const tagsEditor = noteCard.querySelector('[data-role="tags-editor"]');
   const tagsInput = tagsEditor?.querySelector("input");
   const tagsPicker = noteCard.querySelector('[data-role="tags-picker"]');
+  const attachBtn = noteCard.querySelector(".attach-btn");
   const editBtn = noteCard.querySelector(".edit-btn");
   const deleteBtn = noteCard.querySelector(".delete-btn");
   let originalContent;
@@ -300,6 +347,12 @@ function attachNoteEventListeners(index) {
     tagsInput.addEventListener("keydown", handleTagInput);
   }
   attachTagDeleteHandlers(tagsEditor);
+
+  if (attachBtn) {
+    attachBtn.addEventListener("click", async () => {
+      await attachExistingNote(index);
+    });
+  }
 
   editBtn.addEventListener("click", async () => {
     const isEditing = textarea.hasAttribute("readonly");
@@ -321,7 +374,7 @@ function attachNoteEventListeners(index) {
     } else {
       // Save changes
       const newContent = textarea.value.trim();
-      const newTags = getTagsFromEditor(tagsEditor);
+      const newTags = collectTagsForSave(tagsEditor, tagsPicker);
       const contentChanged = newContent !== originalContent;
       const tagsChanged = !areTagArraysEqual(newTags, originalTags);
       if (contentChanged || tagsChanged) {
@@ -350,6 +403,8 @@ async function openNoteModal() {
   document.getElementById("noteModal").classList.add("active");
   await refreshTagCatalog();
   renderNewNoteTagPicker();
+  pendingSelectionAnchor = await captureSelectionAnchorFromActiveTab();
+  renderSelectionAnchorHint();
   document.getElementById("newNoteContent").focus();
 }
 
@@ -360,10 +415,14 @@ function closeNoteModal() {
     <input type="text" placeholder="Add tags (press Enter)" style="border: none; outline: none; flex: 1;">
   `;
   const input = document.querySelector("#tagsInput input");
-  if (input) {
-    input.addEventListener("keydown", handleTagInput);
-  }
+  bindTagInputListener(input);
   document.getElementById("noteTagPicker").innerHTML = "";
+  pendingSelectionAnchor = null;
+  const hint = document.getElementById("selectionAnchorHint");
+  if (hint) {
+    hint.style.display = "none";
+    hint.textContent = "";
+  }
 }
 
 function openSettingsModal() {
@@ -384,16 +443,81 @@ function closeTagsManagerModal() {
   document.getElementById("tagsManagerModal").classList.remove("active");
 }
 
+function openEditTagModal(oldTag) {
+  const oldValueInput = document.getElementById("editTagOldValue");
+  const parentSelect = document.getElementById("editTagParentSelect");
+  const nameInput = document.getElementById("editTagNameInput");
+
+  const oldSegments = oldTag.split("/");
+  const oldLeaf = oldSegments[oldSegments.length - 1] || oldTag;
+  const oldParent = oldSegments.length > 1 ? oldSegments.slice(0, -1).join("/") : "";
+
+  oldValueInput.value = oldTag;
+  nameInput.value = oldLeaf;
+
+  parentSelect.innerHTML = '<option value="">No parent</option>';
+  availableTags
+    .slice()
+    .sort((a, b) => a.localeCompare(b))
+    .forEach((tag) => {
+      // Prevent selecting itself or one of its descendants as a parent.
+      if (tag === oldTag || tag.startsWith(`${oldTag}/`)) return;
+      const depth = tag.split("/").length - 1;
+      const indent = "\u00A0\u00A0".repeat(depth);
+      parentSelect.insertAdjacentHTML(
+        "beforeend",
+        `<option value="${tag}">${indent}${tag}</option>`
+      );
+    });
+
+  parentSelect.value = oldParent;
+  document.getElementById("editTagModal").classList.add("active");
+  nameInput.focus();
+}
+
+function closeEditTagModal() {
+  document.getElementById("editTagModal").classList.remove("active");
+}
+
+async function saveEditedTag() {
+  const oldTag = normalizeTag(document.getElementById("editTagOldValue").value);
+  const parent = normalizeTag(document.getElementById("editTagParentSelect").value);
+  const leaf = normalizeTag(document.getElementById("editTagNameInput").value);
+
+  if (!oldTag || !leaf) return;
+
+  // Keep only the edited leaf segment from the name input.
+  const newLeaf = leaf.includes("/") ? leaf.split("/").pop() : leaf;
+  const newTag = parent ? `${parent}/${newLeaf}` : newLeaf;
+
+  if (!newTag || newTag === oldTag) {
+    closeEditTagModal();
+    return;
+  }
+
+  if (availableTags.includes(newTag)) {
+    alert("That tag already exists.");
+    return;
+  }
+
+  await renameTagEverywhere(oldTag, newTag);
+  closeEditTagModal();
+}
+
 // Save functions
 async function saveNewNote() {
   const content = document.getElementById("newNoteContent").value.trim();
   if (!content) return;
 
-  const tags = getTagsFromEditor(document.getElementById("tagsInput"));
+  const tags = collectTagsForSave(
+    document.getElementById("tagsInput"),
+    document.getElementById("noteTagPicker")
+  );
 
   const newNote = {
     content,
     tags,
+    anchor: pendingSelectionAnchor,
     url: currentUrl,
     createdAt: new Date().toISOString(),
     modifiedAt: new Date().toISOString(),
@@ -450,6 +574,43 @@ async function deleteNote(index) {
     await refreshTagCatalog();
     loadNotes();
   }
+}
+
+async function attachExistingNote(index) {
+  const source = currentNotes[index];
+  if (!source) return;
+
+  const selectionAnchor = await captureSelectionAnchorFromActiveTab();
+  let anchor = null;
+
+  if (selectionAnchor?.exact) {
+    const useSelection = confirm(
+      "A text selection is available on the current page. Attach this note to selected text?\n\nPress OK for selected text, Cancel for page-level note."
+    );
+    anchor = useSelection ? selectionAnchor : null;
+  }
+
+  const attachedNote = {
+    content: source.content,
+    tags: Array.isArray(source.tags) ? [...source.tags] : [],
+    anchor,
+    url: currentUrl,
+    createdAt: new Date().toISOString(),
+    modifiedAt: new Date().toISOString(),
+    attachedFrom: {
+      url: source.url,
+      createdAt: source.createdAt,
+    },
+  };
+
+  const existingNotes = (await chrome.storage.local.get(currentHostname)) || {};
+  const notes = existingNotes[currentHostname] || [];
+  notes.push(attachedNote);
+
+  await chrome.storage.local.set({ [currentHostname]: notes });
+  await ensureTagsInCatalog(attachedNote.tags);
+  await refreshTagCatalog();
+  await loadNotes(document.getElementById("searchInput").value || "");
 }
 
 // Utility functions
@@ -529,6 +690,114 @@ function normalizeTag(rawTag) {
   return segments.join("/");
 }
 
+function getNoteId(note) {
+  return `${note.url}::${note.createdAt}`;
+}
+
+function trimToLength(text, maxLength) {
+  if (!text) return "";
+  return text.length > maxLength ? `${text.slice(0, maxLength - 1)}...` : text;
+}
+
+function escapeHtml(text) {
+  return String(text)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/\"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function renderSelectionAnchorHint() {
+  const hint = document.getElementById("selectionAnchorHint");
+  if (!hint) return;
+
+  if (!pendingSelectionAnchor?.exact) {
+    hint.classList.remove("warning");
+    hint.style.display = "none";
+    hint.textContent = "";
+    return;
+  }
+
+  hint.classList.remove("warning");
+  hint.style.display = "block";
+  hint.innerHTML = `<strong>Anchor:</strong> This note will be attached to selected text.<br>"${escapeHtml(
+    trimToLength(pendingSelectionAnchor.exact, 220)
+  )}"`;
+}
+
+async function captureSelectionAnchorFromActiveTab() {
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (!tab?.id) return null;
+
+    const results = await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      func: () => {
+        const selection = window.getSelection();
+        const text = selection ? selection.toString().trim() : "";
+        if (!text) return null;
+
+        const fullText = document.body?.innerText || "";
+        const idx = fullText.indexOf(text);
+        const prefix = idx >= 0 ? fullText.slice(Math.max(0, idx - 40), idx) : "";
+        const suffix =
+          idx >= 0
+            ? fullText.slice(idx + text.length, idx + text.length + 40)
+            : "";
+
+        return {
+          type: "text-quote",
+          exact: text.slice(0, 1200),
+          prefix: prefix.slice(-120),
+          suffix: suffix.slice(0, 120),
+          capturedAt: new Date().toISOString(),
+        };
+      },
+    });
+
+    return results?.[0]?.result || null;
+  } catch (error) {
+    // Some pages (e.g. chrome://) disallow script injection.
+    return null;
+  }
+}
+
+async function refreshAnchorStates(notes) {
+  anchorStateByNoteId = {};
+  const candidates = notes.filter(
+    (note) => note.url === currentUrl && note.anchor?.type === "text-quote" && note.anchor?.exact
+  );
+
+  if (!candidates.length) return;
+
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (!tab?.id) return;
+
+    const texts = candidates.map((note) => note.anchor.exact);
+    const results = await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      args: [texts],
+      func: (anchors) => {
+        const pageText = document.body?.innerText || "";
+        return anchors.map((anchorText) =>
+          pageText.includes(anchorText) ? "found" : "missing"
+        );
+      },
+    });
+
+    const states = results?.[0]?.result || [];
+    candidates.forEach((note, idx) => {
+      anchorStateByNoteId[getNoteId(note)] = { status: states[idx] || "unknown" };
+    });
+  } catch (error) {
+    candidates.forEach((note) => {
+      anchorStateByNoteId[getNoteId(note)] = { status: "unknown" };
+    });
+  }
+}
+
 function handleTagInput(e) {
   if (e.key === "Enter" && e.target.value.trim()) {
     e.preventDefault();
@@ -570,6 +839,22 @@ function getTagsFromEditor(tagsEditor) {
       )
     )
     .filter(Boolean);
+}
+
+function collectTagsForSave(tagsEditor, tagsPicker) {
+  const chipTags = getTagsFromEditor(tagsEditor);
+  const pendingInput = tagsEditor?.querySelector("input")?.value || "";
+  const pendingTag = normalizeTag(pendingInput);
+
+  const activePickerTags = Array.from(
+    tagsPicker?.querySelectorAll(".available-tag-btn.active") || []
+  )
+    .map((button) => normalizeTag(button.dataset.tag || ""))
+    .filter(Boolean);
+
+  return Array.from(
+    new Set([...chipTags, ...activePickerTags, pendingTag].filter(Boolean))
+  );
 }
 
 function attachTagDeleteHandlers(tagsEditor) {
@@ -709,7 +994,7 @@ function renderTagsManager() {
         <div class="tag-manager-item" data-tag="${row.fullTag}">
           <div class="tag-manager-name" style="padding-left: ${row.depth * 12}px">#${row.fullTag}</div>
           <div class="tag-manager-actions">
-            <button type="button" class="btn-link rename-tag-btn">Rename</button>
+            <button type="button" class="btn-link edit-tag-btn">Edit</button>
             <button type="button" class="btn-link delete delete-tag-btn">Delete</button>
           </div>
           <span></span>
@@ -718,23 +1003,12 @@ function renderTagsManager() {
     )
     .join("");
 
-  list.querySelectorAll(".rename-tag-btn").forEach((btn) => {
+  list.querySelectorAll(".edit-tag-btn").forEach((btn) => {
     btn.addEventListener("click", async () => {
       const row = btn.closest(".tag-manager-item");
       const oldTag = row?.dataset.tag;
       if (!oldTag) return;
-
-      const rawNewTag = prompt("Rename tag", oldTag);
-      if (rawNewTag === null) return;
-      const newTag = normalizeTag(rawNewTag);
-
-      if (!newTag || newTag === oldTag) return;
-      if (availableTags.includes(newTag)) {
-        alert("That tag already exists.");
-        return;
-      }
-
-      await renameTagEverywhere(oldTag, newTag);
+      openEditTagModal(oldTag);
     });
   });
 
@@ -794,6 +1068,21 @@ async function deleteTagEverywhere(targetTag) {
 async function rewriteTagsEverywhere(mapTagFn) {
   const data = await chrome.storage.local.get(null);
   const updates = {};
+
+  const storedCatalog = Array.isArray(data[TAGS_STORAGE_KEY])
+    ? data[TAGS_STORAGE_KEY]
+    : [];
+  const rewrittenCatalog = Array.from(
+    new Set(
+      storedCatalog
+        .map((tag) => normalizeTag(tag))
+        .map((tag) => mapTagFn(tag))
+        .map((tag) => normalizeTag(tag))
+        .filter(Boolean)
+    )
+  ).sort((a, b) => a.localeCompare(b));
+
+  updates[TAGS_STORAGE_KEY] = rewrittenCatalog;
 
   Object.entries(data).forEach(([key, value]) => {
     if (key === TAGS_STORAGE_KEY || !Array.isArray(value)) return;

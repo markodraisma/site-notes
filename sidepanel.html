@@ -522,6 +522,43 @@
       .note-tag-picker {
         margin-top: 8px;
       }
+
+      .anchor-clue {
+        margin-top: 8px;
+        padding: 8px;
+        border-radius: 6px;
+        font-size: 0.8rem;
+        border: 1px solid var(--border-color);
+        background: #f9fafb;
+        color: #374151;
+      }
+
+      .anchor-clue.warning {
+        border-color: #f59e0b;
+        background: #fffbeb;
+        color: #92400e;
+      }
+
+      .anchor-pill {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        font-size: 0.75rem;
+        background: #eff6ff;
+        color: #1d4ed8;
+        border-radius: 999px;
+        padding: 3px 8px;
+        margin-top: 6px;
+      }
+
+      .anchor-quote {
+        margin-top: 6px;
+        font-size: 0.8rem;
+        color: #4b5563;
+        border-left: 2px solid #dbeafe;
+        padding-left: 8px;
+        white-space: pre-wrap;
+      }
     </style>
   </head>
   <body>
@@ -573,6 +610,7 @@
           </button>
         </div>
         <div class="modal-body">
+          <div id="selectionAnchorHint" class="anchor-clue" style="display: none;"></div>
           <div class="tags-input" id="tagsInput">
             <input
               type="text"
@@ -673,6 +711,38 @@
         </div>
         <div class="modal-footer">
           <button class="btn btn-secondary" id="doneTagsManagerBtn">Done</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Edit Tag Modal -->
+    <div class="modal" id="editTagModal">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h3>Edit Tag</h3>
+          <button class="note-action-btn" id="closeEditTagBtn">
+            <i class="fas fa-times"></i>
+          </button>
+        </div>
+        <div class="modal-body">
+          <input type="hidden" id="editTagOldValue" />
+          <label class="section-text" for="editTagParentSelect">Parent</label>
+          <select id="editTagParentSelect" class="tag-manager-select" style="width: 100%; margin-bottom: 10px;">
+            <option value="">No parent</option>
+          </select>
+
+          <label class="section-text" for="editTagNameInput">Tag name</label>
+          <input
+            id="editTagNameInput"
+            class="tag-manager-input"
+            type="text"
+            placeholder="Tag name"
+            style="width: calc(100% - 18px);"
+          />
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-secondary" id="cancelEditTagBtn">Cancel</button>
+          <button class="btn btn-primary" id="saveEditTagBtn">Save</button>
         </div>
       </div>
     </div>
