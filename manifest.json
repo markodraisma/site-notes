@@ -3,7 +3,14 @@
   "name": "SiteNotes - Your Ultimate Browsing Companion",
   "version": "2.1",
   "description": "Take and save notes for any website in a beautiful sidebar",
-  "permissions": ["sidePanel", "storage", "tabs", "scripting", "activeTab"],
+  "permissions": [
+    "sidePanel",
+    "storage",
+    "tabs",
+    "scripting",
+    "activeTab",
+    "clipboardRead"
+  ],
   "action": {},
   "icons": {
     "16": "icon16.png",

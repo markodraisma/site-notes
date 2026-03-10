@@ -745,6 +745,44 @@
       .toast-btn:hover {
         background: rgba(255, 255, 255, 0.16);
       }
+
+      .context-menu {
+        position: fixed;
+        z-index: 1600;
+        min-width: 220px;
+        border: 1px solid var(--border-color);
+        background: #ffffff;
+        box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
+        border-radius: 8px;
+        padding: 6px;
+        display: none;
+      }
+
+      .context-menu.visible {
+        display: block;
+      }
+
+      .context-menu-item {
+        width: 100%;
+        border: none;
+        background: transparent;
+        text-align: left;
+        padding: 8px 10px;
+        border-radius: 6px;
+        font-size: 0.82rem;
+        color: #111827;
+        cursor: pointer;
+      }
+
+      .context-menu-item:hover {
+        background: #eff6ff;
+      }
+
+      .context-menu-item .hint {
+        color: #6b7280;
+        font-size: 0.75rem;
+        margin-left: 6px;
+      }
     </style>
   </head>
   <body>
@@ -968,6 +1006,15 @@
         <button id="toastActionBtn" class="toast-btn" style="display: none"></button>
         <button id="toastCloseBtn" class="toast-btn" title="Close">Close</button>
       </div>
+    </div>
+
+    <div id="pasteContextMenu" class="context-menu" role="menu" aria-label="Paste options">
+      <button id="pasteAsMarkdownBtn" class="context-menu-item" type="button" role="menuitem">
+        Paste as Markdown <span class="hint">(default)</span>
+      </button>
+      <button id="pasteAsPlainTextBtn" class="context-menu-item" type="button" role="menuitem">
+        Paste as Plain Text
+      </button>
     </div>
 
     <script src="markdown.js"></script>

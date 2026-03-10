@@ -7,6 +7,7 @@ let pendingSelectionAnchor = null;
 let anchorStateByNoteId = {};
 let pendingAttachContext = null;
 let deleteUndoState = null;
+let pasteContextState = null;
 
 const MARKDOWN = globalThis.SiteNotesMarkdown || {};
 const STORAGE = globalThis.SiteNotesStorage || {};
@@ -22,21 +23,164 @@ function bindTagInputListener(input) {
 function bindMarkdownPasteListener(textarea) {
   if (!textarea || textarea.dataset.markdownPasteBound === "1") return;
   textarea.addEventListener("paste", handleMarkdownPaste);
+  textarea.addEventListener("contextmenu", handleTextareaContextMenu);
   textarea.dataset.markdownPasteBound = "1";
 }
 
 function insertTextAtCursor(textarea, text) {
   if (!textarea) return;
 
-  const value = textarea.value || "";
-  const start = typeof textarea.selectionStart === "number" ? textarea.selectionStart : value.length;
-  const end = typeof textarea.selectionEnd === "number" ? textarea.selectionEnd : value.length;
-  textarea.value = `${value.slice(0, start)}${text}${value.slice(end)}`;
+  const start = typeof textarea.selectionStart === "number" ? textarea.selectionStart : 0;
+  const end = typeof textarea.selectionEnd === "number" ? textarea.selectionEnd : start;
+  textarea.focus();
 
-  const caret = start + text.length;
-  textarea.selectionStart = caret;
-  textarea.selectionEnd = caret;
+  // Use native insertion first so Ctrl/Cmd+Z works reliably in textarea editing.
+  try {
+    textarea.setSelectionRange(start, end);
+  } catch {
+    // Some environments may throw if selection can't be updated.
+  }
+
+  const usedNativeInsert =
+    typeof document.execCommand === "function" &&
+    document.execCommand("insertText", false, text);
+
+  if (usedNativeInsert) {
+    textarea.dispatchEvent(new Event("input", { bubbles: true }));
+    return;
+  }
+
+  // Fallback if native insertText is unavailable.
+  textarea.setRangeText(text, start, end, "end");
   textarea.dispatchEvent(new Event("input", { bubbles: true }));
+}
+
+function closePasteContextMenu() {
+  const menu = document.getElementById("pasteContextMenu");
+  if (menu) menu.classList.remove("visible");
+  pasteContextState = null;
+}
+
+function openPasteContextMenu(x, y, target, selectionStart, selectionEnd) {
+  const menu = document.getElementById("pasteContextMenu");
+  if (!menu) return;
+
+  const viewportWidth = window.innerWidth;
+  const viewportHeight = window.innerHeight;
+  const estimatedWidth = 240;
+  const estimatedHeight = 88;
+  const left = Math.max(8, Math.min(x, viewportWidth - estimatedWidth - 8));
+  const top = Math.max(8, Math.min(y, viewportHeight - estimatedHeight - 8));
+
+  pasteContextState = {
+    target,
+    selectionStart,
+    selectionEnd,
+  };
+
+  menu.style.left = `${left}px`;
+  menu.style.top = `${top}px`;
+  menu.classList.add("visible");
+}
+
+function handleTextareaContextMenu(e) {
+  const textarea = e.currentTarget;
+  if (!(textarea instanceof HTMLTextAreaElement)) return;
+
+  e.preventDefault();
+  textarea.focus();
+  openPasteContextMenu(
+    e.clientX,
+    e.clientY,
+    textarea,
+    textarea.selectionStart,
+    textarea.selectionEnd
+  );
+}
+
+function convertHtmlToPlainText(html) {
+  try {
+    const parser = new DOMParser();
+    const doc = parser.parseFromString(`<div>${String(html || "")}</div>`, "text/html");
+    return (doc.body?.innerText || doc.body?.textContent || "").trim();
+  } catch {
+    return "";
+  }
+}
+
+async function readClipboardPayload() {
+  let html = "";
+  let text = "";
+  let available = false;
+
+  if (navigator.clipboard?.read) {
+    try {
+      const items = await navigator.clipboard.read();
+      for (const item of items) {
+        available = true;
+        if (!html && item.types.includes("text/html")) {
+          const blob = await item.getType("text/html");
+          html = await blob.text();
+        }
+        if (!text && item.types.includes("text/plain")) {
+          const blob = await item.getType("text/plain");
+          text = await blob.text();
+        }
+      }
+    } catch {
+      // Fall back to readText below.
+    }
+  }
+
+  if (!text && navigator.clipboard?.readText) {
+    try {
+      text = await navigator.clipboard.readText();
+      available = true;
+    } catch {
+      // Ignore clipboard read failures.
+    }
+  }
+
+  return { html, text, available };
+}
+
+async function pasteFromContextMenu(mode) {
+  const ctx = pasteContextState;
+  closePasteContextMenu();
+  if (!ctx?.target || !(ctx.target instanceof HTMLTextAreaElement)) return;
+
+  const textarea = ctx.target;
+  textarea.focus();
+  if (typeof ctx.selectionStart === "number" && typeof ctx.selectionEnd === "number") {
+    textarea.selectionStart = ctx.selectionStart;
+    textarea.selectionEnd = ctx.selectionEnd;
+  }
+
+  const { html, text, available } = await readClipboardPayload();
+  let toInsert = "";
+
+  if (mode === "markdown") {
+    const converter = MARKDOWN.convertHtmlToMarkdown;
+    if (html && typeof converter === "function") {
+      toInsert = converter(html, currentUrl);
+    }
+    if (!toInsert) {
+      toInsert = text || convertHtmlToPlainText(html);
+    }
+  } else {
+    toInsert = text || convertHtmlToPlainText(html);
+  }
+
+  if (!toInsert) {
+    if (!available) {
+      showToast("Clipboard read not available. Reload extension to apply permission update.", "warning");
+    } else {
+      showToast("Clipboard is empty.", "warning");
+    }
+    return;
+  }
+
+  insertTextAtCursor(textarea, toInsert);
 }
 
 function handleMarkdownPaste(e) {
@@ -52,7 +196,7 @@ function handleMarkdownPaste(e) {
   const converter = MARKDOWN.convertHtmlToMarkdown;
   if (typeof converter !== "function") return;
 
-  const markdown = converter(html);
+  const markdown = converter(html, currentUrl);
   if (!markdown) return;
 
   e.preventDefault();
@@ -175,6 +319,22 @@ function setupEventListeners() {
     hideToast();
   });
 
+  document.getElementById("pasteAsMarkdownBtn")?.addEventListener("click", () => {
+    pasteFromContextMenu("markdown");
+  });
+  document.getElementById("pasteAsPlainTextBtn")?.addEventListener("click", () => {
+    pasteFromContextMenu("plain");
+  });
+
+  document.addEventListener("click", (e) => {
+    const menu = document.getElementById("pasteContextMenu");
+    if (!menu?.classList.contains("visible")) return;
+    if (e.target instanceof Node && menu.contains(e.target)) return;
+    closePasteContextMenu();
+  });
+
+  document.addEventListener("scroll", closePasteContextMenu, true);
+
   // Global keyboard shortcuts
   document.addEventListener("keydown", handleGlobalKeydown);
 
@@ -289,6 +449,16 @@ function isInlineNoteEditActive() {
 async function handleGlobalKeydown(e) {
   const key = e.key;
   const activeModal = getActiveModal();
+  const pasteMenu = document.getElementById("pasteContextMenu");
+  const pasteMenuOpen = Boolean(pasteMenu?.classList.contains("visible"));
+
+  if (pasteMenuOpen && key === "Escape") {
+    e.preventDefault();
+    closePasteContextMenu();
+    return;
+  }
+
+  if (pasteMenuOpen) return;
 
   if (
     key === "/" &&

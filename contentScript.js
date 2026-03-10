@@ -333,7 +333,11 @@
   }
 
   function buildTooltipHtml(note) {
-    const preview = trimToLength(note.content || "", 220);
+    const rawContent = String(note.content || "");
+    const hasMarkdownLink = /\[[^\]]+\]\([^)]+\)/.test(rawContent);
+    const preview = hasMarkdownLink
+      ? trimToLength(rawContent, 1200)
+      : trimToLength(rawContent, 220);
     const renderedPreview = renderBasicMarkdown(preview || "Attached note");
     const tagsHtml = Array.isArray(note.tags) && note.tags.length
       ? `<p><strong>Tags:</strong> ${note.tags
