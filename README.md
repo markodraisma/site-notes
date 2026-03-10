@@ -21,6 +21,7 @@ The **Site Notes Chrome Extension** is a lightweight tool designed to enhance yo
 - Write notes in plain markdown while editing.
 - Read mode renders basic rich text: links, bold, italic, inline code, paragraphs, and line breaks.
 - Add-note modal includes a compact markdown quick help for headings, lists, and links.
+- Paste rich copied webpage content directly into note editors and it is converted to markdown.
 
 ### 3. 🔗 Link-Friendly Reading
 - Markdown links like `[title](https://example.com)` are clickable.

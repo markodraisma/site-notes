@@ -19,6 +19,46 @@ function bindTagInputListener(input) {
   input.dataset.tagInputBound = "1";
 }
 
+function bindMarkdownPasteListener(textarea) {
+  if (!textarea || textarea.dataset.markdownPasteBound === "1") return;
+  textarea.addEventListener("paste", handleMarkdownPaste);
+  textarea.dataset.markdownPasteBound = "1";
+}
+
+function insertTextAtCursor(textarea, text) {
+  if (!textarea) return;
+
+  const value = textarea.value || "";
+  const start = typeof textarea.selectionStart === "number" ? textarea.selectionStart : value.length;
+  const end = typeof textarea.selectionEnd === "number" ? textarea.selectionEnd : value.length;
+  textarea.value = `${value.slice(0, start)}${text}${value.slice(end)}`;
+
+  const caret = start + text.length;
+  textarea.selectionStart = caret;
+  textarea.selectionEnd = caret;
+  textarea.dispatchEvent(new Event("input", { bubbles: true }));
+}
+
+function handleMarkdownPaste(e) {
+  const textarea = e.currentTarget;
+  if (!(textarea instanceof HTMLTextAreaElement)) return;
+
+  const clipboard = e.clipboardData;
+  if (!clipboard) return;
+
+  const html = clipboard.getData("text/html");
+  if (!html || !/<[a-z][\s\S]*>/i.test(html)) return;
+
+  const converter = MARKDOWN.convertHtmlToMarkdown;
+  if (typeof converter !== "function") return;
+
+  const markdown = converter(html);
+  if (!markdown) return;
+
+  e.preventDefault();
+  insertTextAtCursor(textarea, markdown);
+}
+
 // Initialize the extension
 async function initialize() {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
@@ -192,6 +232,7 @@ function setupEventListeners() {
   // New note tags input
   const tagsInput = document.querySelector("#tagsInput input");
   bindTagInputListener(tagsInput);
+  bindMarkdownPasteListener(document.getElementById("newNoteContent"));
 
   // Tab changes
   chrome.tabs.onActivated.addListener(initialize);
@@ -498,6 +539,7 @@ function attachNoteEventListeners(index) {
   let originalTags = [];
 
   bindTagInputListener(tagsEditor?.querySelector("input"));
+  bindMarkdownPasteListener(textarea);
 
   if (attachBtn) {
     attachBtn.addEventListener("click", async () => {

@@ -123,6 +123,135 @@
     return "";
   }
 
+  function escapeMarkdownText(text) {
+    return String(text || "")
+      .replace(/\\/g, "\\\\")
+      .replace(/([`*_\[\]()#+.!-])/g, "\\$1");
+  }
+
+  function normalizeWhitespace(text) {
+    return String(text || "")
+      .replace(/\u00a0/g, " ")
+      .replace(/\s+/g, " ");
+  }
+
+  function renderInlineNodesToMarkdown(nodes) {
+    return Array.from(nodes || [])
+      .map((node) => {
+        if (node.nodeType === Node.TEXT_NODE) {
+          return escapeMarkdownText(normalizeWhitespace(node.nodeValue));
+        }
+
+        if (node.nodeType !== Node.ELEMENT_NODE) {
+          return "";
+        }
+
+        const tag = node.tagName.toLowerCase();
+        const inner = renderInlineNodesToMarkdown(node.childNodes).trim();
+
+        if (tag === "br") return "\n";
+        if (tag === "strong" || tag === "b") return inner ? `**${inner}**` : "";
+        if (tag === "em" || tag === "i") return inner ? `*${inner}*` : "";
+        if (tag === "code") return inner ? `\`${inner}\`` : "";
+        if (tag === "a") {
+          const href = (node.getAttribute("href") || "").trim();
+          const safeHref = sanitizeUrl(href);
+          if (!inner) return safeHref !== "#" ? safeHref : "";
+          return safeHref !== "#" ? `[${inner}](${safeHref})` : inner;
+        }
+        if (tag === "img") {
+          const alt = escapeMarkdownText((node.getAttribute("alt") || "image").trim());
+          const src = (node.getAttribute("src") || "").trim();
+          return src ? `![${alt}](${src})` : "";
+        }
+
+        return inner;
+      })
+      .join("")
+      .replace(/\s+\n/g, "\n")
+      .replace(/\n\s+/g, "\n");
+  }
+
+  function renderBlockNodeToMarkdown(node, depth = 0) {
+    if (node.nodeType === Node.TEXT_NODE) {
+      return escapeMarkdownText(normalizeWhitespace(node.nodeValue));
+    }
+
+    if (node.nodeType !== Node.ELEMENT_NODE) {
+      return "";
+    }
+
+    const tag = node.tagName.toLowerCase();
+
+    if (tag === "h1" || tag === "h2" || tag === "h3" || tag === "h4" || tag === "h5" || tag === "h6") {
+      const level = Number(tag[1]) || 1;
+      const text = renderInlineNodesToMarkdown(node.childNodes).trim();
+      return text ? `${"#".repeat(level)} ${text}\n\n` : "";
+    }
+
+    if (tag === "p") {
+      const text = renderInlineNodesToMarkdown(node.childNodes).trim();
+      return text ? `${text}\n\n` : "";
+    }
+
+    if (tag === "blockquote") {
+      const inner = renderBlockChildrenToMarkdown(node, depth)
+        .trim()
+        .split("\n")
+        .map((line) => (line ? `> ${line}` : ">"))
+        .join("\n");
+      return inner ? `${inner}\n\n` : "";
+    }
+
+    if (tag === "pre") {
+      const code = node.textContent ? node.textContent.replace(/\s+$/g, "") : "";
+      return code ? `\`\`\`\n${code}\n\`\`\`\n\n` : "";
+    }
+
+    if (tag === "ul" || tag === "ol") {
+      let itemIndex = 1;
+      const lines = Array.from(node.children)
+        .filter((child) => child.tagName && child.tagName.toLowerCase() === "li")
+        .map((li) => {
+          const marker = tag === "ol" ? `${itemIndex++}.` : "-";
+          const text = renderInlineNodesToMarkdown(li.childNodes).trim();
+          const indent = "  ".repeat(depth);
+          return text ? `${indent}${marker} ${text}` : "";
+        })
+        .filter(Boolean);
+      return lines.length ? `${lines.join("\n")}\n\n` : "";
+    }
+
+    if (tag === "br") return "\n";
+
+    if (tag === "div" || tag === "section" || tag === "article" || tag === "main") {
+      const content = renderBlockChildrenToMarkdown(node, depth).trim();
+      return content ? `${content}\n\n` : "";
+    }
+
+    return renderInlineNodesToMarkdown(node.childNodes);
+  }
+
+  function renderBlockChildrenToMarkdown(root, depth = 0) {
+    return Array.from(root.childNodes || [])
+      .map((child) => renderBlockNodeToMarkdown(child, depth + 1))
+      .join("");
+  }
+
+  function convertHtmlToMarkdown(html) {
+    const source = String(html || "").trim();
+    if (!source) return "";
+
+    const parser = new DOMParser();
+    const doc = parser.parseFromString(`<div id="sitenotes-clipboard-root">${source}</div>`, "text/html");
+    const root = doc.getElementById("sitenotes-clipboard-root") || doc.body;
+    const markdown = renderBlockChildrenToMarkdown(root)
+      .replace(/\n{3,}/g, "\n\n")
+      .trim();
+
+    return markdown;
+  }
+
   globalThis.SiteNotesMarkdown = {
     escapeHtml,
     trimToLength,
@@ -130,5 +259,6 @@
     renderInlineMarkdown,
     renderBasicMarkdown,
     extractFirstLinkFromMarkdown,
+    convertHtmlToMarkdown,
   };
 })();
