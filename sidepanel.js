@@ -9,6 +9,7 @@ let pendingAttachContext = null;
 let deleteUndoState = null;
 
 const MARKDOWN = globalThis.SiteNotesMarkdown || {};
+const STORAGE = globalThis.SiteNotesStorage || {};
 
 const TAGS_STORAGE_KEY = "__siteNotesTags__";
 
@@ -41,6 +42,14 @@ async function initialize() {
   document.getElementById(
     "favicon"
   ).src = `https://www.google.com/s2/favicons?domain=${currentHostname}`;
+
+  if (typeof STORAGE.ensureDataVersion === "function") {
+    try {
+      await STORAGE.ensureDataVersion();
+    } catch (error) {
+      console.error("Failed to run storage migration:", error);
+    }
+  }
 
   setupEventListeners();
   await refreshTagCatalog();
@@ -126,6 +135,9 @@ function setupEventListeners() {
     hideToast();
   });
 
+  // Global keyboard shortcuts
+  document.addEventListener("keydown", handleGlobalKeydown);
+
   // Global tag manager
   document
     .getElementById("manageTagsBtn")
@@ -190,6 +202,85 @@ function setupEventListeners() {
   });
 }
 
+function isTextEntryTarget(target) {
+  if (!(target instanceof HTMLElement)) return false;
+  if (target.isContentEditable) return true;
+  const tag = (target.tagName || "").toLowerCase();
+  return tag === "input" || tag === "textarea" || tag === "select";
+}
+
+function getActiveModal() {
+  return document.querySelector(".modal.active");
+}
+
+function closeActiveModal() {
+  const modal = getActiveModal();
+  if (!modal) return false;
+
+  switch (modal.id) {
+    case "noteModal":
+      closeNoteModal();
+      return true;
+    case "settingsModal":
+      closeSettingsModal();
+      return true;
+    case "tagsManagerModal":
+      closeTagsManagerModal();
+      return true;
+    case "editTagModal":
+      closeEditTagModal();
+      return true;
+    case "attachNoteModal":
+      closeAttachNoteModal();
+      return true;
+    default:
+      modal.classList.remove("active");
+      return true;
+  }
+}
+
+function isInlineNoteEditActive() {
+  return Array.from(
+    document.querySelectorAll('.note-card [data-role="content-editor"]')
+  ).some((editor) => editor.style.display !== "none");
+}
+
+async function handleGlobalKeydown(e) {
+  const key = e.key;
+  const activeModal = getActiveModal();
+
+  if (
+    key === "/" &&
+    !e.ctrlKey &&
+    !e.metaKey &&
+    !e.altKey &&
+    !isTextEntryTarget(e.target) &&
+    !activeModal
+  ) {
+    e.preventDefault();
+    const searchInput = document.getElementById("searchInput");
+    if (searchInput) {
+      searchInput.focus();
+      searchInput.select();
+    }
+    return;
+  }
+
+  if (key === "Escape") {
+    if (isInlineNoteEditActive()) return;
+    if (activeModal) {
+      e.preventDefault();
+      closeActiveModal();
+    }
+    return;
+  }
+
+  if ((e.ctrlKey || e.metaKey) && key === "Enter" && activeModal?.id === "noteModal") {
+    e.preventDefault();
+    await saveNewNote();
+  }
+}
+
 // Load notes based on current view mode and search term
 async function loadNotes(searchTerm = "") {
   const allNotes = await getAllNotes();
@@ -232,6 +323,10 @@ async function loadNotes(searchTerm = "") {
 // Get all notes from storage
 async function getAllNotes() {
   try {
+    if (typeof STORAGE.getAllNotes === "function") {
+      return await STORAGE.getAllNotes();
+    }
+
     const data = await chrome.storage.local.get(null);
     return Object.entries(data)
       .filter(([key, value]) => key !== TAGS_STORAGE_KEY && Array.isArray(value))
@@ -311,6 +406,19 @@ function createNoteHTML(note, index) {
     ? '<div class="anchor-pill"><i class="fas fa-link"></i> Linked to this page (page-level) <button type="button" class="btn-link delete unlink-page-link-btn">Unlink</button></div>'
     : "";
 
+  const attachmentSources = getAttachmentSourcesForPage(note, currentUrl);
+  const attachedFromHtml = attachmentSources.length
+    ? `<div class="anchor-pill"><i class="fas fa-paperclip"></i> Attached from ${attachmentSources
+        .map((sourceUrl) => {
+          const safeUrl = sanitizeUrl(sourceUrl);
+          const label = escapeHtml(getAttachmentSourceLabel(sourceUrl));
+          return `<a href="${safeUrl}" class="note-url" title="${escapeHtml(
+            sourceUrl
+          )}" target="_blank" rel="noopener noreferrer">${label}</a>`;
+        })
+        .join(", ")}</div>`
+    : "";
+
   const selectedTags = (note.tags || [])
     .map((tag) => normalizeTag(tag))
     .filter(Boolean)
@@ -356,6 +464,7 @@ function createNoteHTML(note, index) {
         <div class="tags-input" data-role="tags-editor" style="display: none;">
           <input type="text" placeholder="Add tags (press Enter)" style="border: none; outline: none; flex: 1;">
         </div>
+        ${attachedFromHtml}
         ${pageLinkHtml}
         ${anchorsHtml}
       </div>
@@ -371,6 +480,8 @@ function createNoteHTML(note, index) {
 function attachNoteEventListeners(index) {
   const noteCard = document.querySelector(`.note-card[data-index="${index}"]`);
   if (!noteCard) return;
+  const note = currentNotes[index];
+  if (!note) return;
 
   const contentDisplay = noteCard.querySelector('[data-role="content-display"]');
   const textarea = noteCard.querySelector('[data-role="content-editor"]');
@@ -418,43 +529,75 @@ function attachNoteEventListeners(index) {
     });
   }
 
-  editBtn.addEventListener("click", async () => {
-    const isEditing = textarea.style.display === "none";
-
-    if (isEditing) {
-      // Enter edit mode
-      originalContent = textarea.value;
-      originalTags = (currentNotes[index]?.tags || [])
-        .map((tag) => normalizeTag(tag))
-        .filter(Boolean)
-        .sort((a, b) => a.localeCompare(b));
-      if (contentDisplay) contentDisplay.style.display = "none";
-      textarea.style.display = "block";
-      textarea.focus();
-      if (tagsDisplay) tagsDisplay.style.display = "none";
-      if (tagsEditor) {
-        tagsEditor.style.display = "flex";
-        renderTagEditor(tagsEditor, note.tags || []);
-      }
-      editBtn.innerHTML = '<i class="fas fa-save"></i>';
-      editBtn.title = "Save";
+  async function commitEdit() {
+    const newContent = textarea.value.trim();
+    const newTags = collectTagsForSave(tagsEditor);
+    const contentChanged = newContent !== originalContent;
+    const tagsChanged = !areTagArraysEqual(newTags, originalTags);
+    if (contentChanged || tagsChanged) {
+      await saveNoteEdit(index, newContent, newTags);
     } else {
-      // Save changes
-      const newContent = textarea.value.trim();
-      const newTags = collectTagsForSave(tagsEditor);
-      const contentChanged = newContent !== originalContent;
-      const tagsChanged = !areTagArraysEqual(newTags, originalTags);
-      if (contentChanged || tagsChanged) {
-        await saveNoteEdit(index, newContent, newTags);
-      } else {
-        loadNotes();
+      await loadNotes();
+    }
+  }
+
+  function exitEditMode() {
+    textarea.style.display = "none";
+    if (contentDisplay) contentDisplay.style.display = "block";
+    if (tagsDisplay) tagsDisplay.style.display = "";
+    if (tagsEditor) tagsEditor.style.display = "none";
+    editBtn.innerHTML = '<i class="fas fa-pen"></i>';
+    editBtn.title = "Edit";
+  }
+
+  function enterEditMode() {
+    originalContent = textarea.value.trim();
+    originalTags = (currentNotes[index]?.tags || [])
+      .map((tag) => normalizeTag(tag))
+      .filter(Boolean)
+      .sort((a, b) => a.localeCompare(b));
+    if (contentDisplay) contentDisplay.style.display = "none";
+    textarea.style.display = "block";
+    textarea.focus();
+    if (tagsDisplay) tagsDisplay.style.display = "none";
+    if (tagsEditor) {
+      tagsEditor.style.display = "flex";
+      renderTagEditor(tagsEditor, note.tags || []);
+    }
+    editBtn.innerHTML = '<i class="fas fa-save"></i>';
+    editBtn.title = "Save";
+  }
+
+  editBtn.addEventListener("click", async () => {
+    const isEditing = textarea.style.display !== "none";
+    if (!isEditing) {
+      enterEditMode();
+      return;
+    }
+
+    await commitEdit();
+    exitEditMode();
+  });
+
+  textarea.addEventListener("keydown", async (e) => {
+    const isEditing = textarea.style.display !== "none";
+    if (!isEditing) return;
+
+    const isSaveShortcut = (e.ctrlKey || e.metaKey) && e.key === "Enter";
+    if (isSaveShortcut) {
+      e.preventDefault();
+      await commitEdit();
+      exitEditMode();
+      return;
+    }
+
+    if (e.key === "Escape") {
+      e.preventDefault();
+      textarea.value = originalContent;
+      if (tagsEditor) {
+        renderTagEditor(tagsEditor, originalTags);
       }
-      textarea.style.display = "none";
-      if (contentDisplay) contentDisplay.style.display = "block";
-      if (tagsDisplay) tagsDisplay.style.display = "";
-      if (tagsEditor) tagsEditor.style.display = "none";
-      editBtn.innerHTML = '<i class="fas fa-pen"></i>';
-      editBtn.title = "Edit";
+      exitEditMode();
     }
   });
 
@@ -588,11 +731,15 @@ async function saveNewNote() {
     modifiedAt: new Date().toISOString(),
   };
 
-  const existingNotes = (await chrome.storage.local.get(currentHostname)) || {};
-  const notes = existingNotes[currentHostname] || [];
-  notes.push(newNote);
+  if (typeof STORAGE.saveNote === "function") {
+    await STORAGE.saveNote(newNote, currentHostname);
+  } else {
+    const existingNotes = (await chrome.storage.local.get(currentHostname)) || {};
+    const notes = existingNotes[currentHostname] || [];
+    notes.push(newNote);
+    await chrome.storage.local.set({ [currentHostname]: notes });
+  }
 
-  await chrome.storage.local.set({ [currentHostname]: notes });
   await ensureTagsInCatalog(tags);
   closeNoteModal();
   await loadNotes();
@@ -601,23 +748,37 @@ async function saveNewNote() {
 
 async function saveNoteEdit(index, content, tags) {
   const note = currentNotes[index];
-  const hostname = new URL(note.url).hostname;
-  const existingNotes = await chrome.storage.local.get(hostname);
-  const notes = existingNotes[hostname] || [];
+  if (!note) return;
 
-  const noteIndex = notes.findIndex(
-    (n) => n.url === note.url && n.createdAt === note.createdAt
-  );
-
-  if (noteIndex !== -1) {
-    notes[noteIndex] = {
-      ...notes[noteIndex],
+  let updated = false;
+  if (typeof STORAGE.updateNote === "function") {
+    const result = await STORAGE.updateNote(note, (existing) => ({
+      ...existing,
       content: content.trim(),
       tags,
       modifiedAt: new Date().toISOString(),
-    };
+    }));
+    updated = Boolean(result?.updated);
+  } else {
+    const hostname = new URL(note.url).hostname;
+    const existingNotes = await chrome.storage.local.get(hostname);
+    const notes = existingNotes[hostname] || [];
+    const noteIndex = notes.findIndex(
+      (n) => n.url === note.url && n.createdAt === note.createdAt
+    );
+    if (noteIndex !== -1) {
+      notes[noteIndex] = {
+        ...notes[noteIndex],
+        content: content.trim(),
+        tags,
+        modifiedAt: new Date().toISOString(),
+      };
+      await chrome.storage.local.set({ [hostname]: notes });
+      updated = true;
+    }
+  }
 
-    await chrome.storage.local.set({ [hostname]: notes });
+  if (updated) {
     await ensureTagsInCatalog(tags);
     await refreshTagCatalog();
     await loadNotes();
@@ -627,20 +788,34 @@ async function saveNoteEdit(index, content, tags) {
 
 async function deleteNote(index) {
   const note = currentNotes[index];
-  const hostname = new URL(note.url).hostname;
-  const existingNotes = await chrome.storage.local.get(hostname);
-  const notes = existingNotes[hostname] || [];
+  if (!note) return;
 
-  const noteIndex = notes.findIndex(
-    (n) => n.url === note.url && n.createdAt === note.createdAt
-  );
+  let deleted = null;
+  if (typeof STORAGE.deleteNote === "function") {
+    deleted = await STORAGE.deleteNote(note);
+  } else {
+    const hostname = new URL(note.url).hostname;
+    const existingNotes = await chrome.storage.local.get(hostname);
+    const notes = existingNotes[hostname] || [];
+    const noteIndex = notes.findIndex(
+      (n) => n.url === note.url && n.createdAt === note.createdAt
+    );
 
-  if (noteIndex !== -1) {
-    const [deletedNote] = notes.splice(noteIndex, 1);
-    await chrome.storage.local.set({ [hostname]: notes });
+    if (noteIndex !== -1) {
+      const [deletedNote] = notes.splice(noteIndex, 1);
+      await chrome.storage.local.set({ [hostname]: notes });
+      deleted = { deleted: true, hostname, note: deletedNote, noteIndex };
+    }
+  }
+
+  if (deleted?.deleted) {
     await refreshTagCatalog();
     await loadNotes();
-    scheduleDeleteUndo({ hostname, note: deletedNote, noteIndex });
+    scheduleDeleteUndo({
+      hostname: deleted.hostname,
+      note: deleted.note,
+      noteIndex: deleted.noteIndex,
+    });
     showToast("Note deleted.", "warning", {
       label: "Undo",
       onClick: undoLastDelete,
@@ -657,12 +832,16 @@ async function undoLastDelete() {
   }
   deleteUndoState = null;
 
-  const existingNotes = await chrome.storage.local.get(hostname);
-  const notes = existingNotes[hostname] || [];
-  const insertAt = Math.max(0, Math.min(noteIndex, notes.length));
-  notes.splice(insertAt, 0, note);
+  if (typeof STORAGE.insertNote === "function") {
+    await STORAGE.insertNote(hostname, note, noteIndex);
+  } else {
+    const existingNotes = await chrome.storage.local.get(hostname);
+    const notes = existingNotes[hostname] || [];
+    const insertAt = Math.max(0, Math.min(noteIndex, notes.length));
+    notes.splice(insertAt, 0, note);
+    await chrome.storage.local.set({ [hostname]: notes });
+  }
 
-  await chrome.storage.local.set({ [hostname]: notes });
   await refreshTagCatalog();
   await loadNotes(document.getElementById("searchInput").value || "");
   showToast("Note restored.", "success");
@@ -692,35 +871,61 @@ async function reanchorNote(index, anchorId) {
     return;
   }
 
-  const hostname = new URL(note.url).hostname;
-  const existingNotes = await chrome.storage.local.get(hostname);
-  const notes = existingNotes[hostname] || [];
-  const noteIndex = notes.findIndex(
-    (n) => n.url === note.url && n.createdAt === note.createdAt
-  );
-  if (noteIndex === -1) return;
+  const result = await (typeof STORAGE.updateNote === "function"
+    ? STORAGE.updateNote(note, (stored) => {
+        if (anchorId === "legacy-primary") {
+          stored.anchor = updatedAnchor;
+        } else {
+          const links = Array.isArray(stored.linkedAnchors) ? [...stored.linkedAnchors] : [];
+          const linkIndex = resolveLinkedAnchorIndexById(links, anchorId);
+          if (linkIndex === -1) return null;
+          links[linkIndex] = {
+            ...links[linkIndex],
+            anchor: updatedAnchor,
+            url: currentUrl,
+          };
+          stored.linkedAnchors = links;
+        }
 
-  const stored = notes[noteIndex];
-  if (anchorId === "legacy-primary") {
-    stored.anchor = updatedAnchor;
-  } else {
-    const links = Array.isArray(stored.linkedAnchors) ? [...stored.linkedAnchors] : [];
-    const linkIndex = resolveLinkedAnchorIndexById(links, anchorId);
-    if (linkIndex === -1) return;
-    links[linkIndex] = {
-      ...links[linkIndex],
-      anchor: updatedAnchor,
-      url: currentUrl,
+        return {
+          ...stored,
+          modifiedAt: new Date().toISOString(),
+        };
+      })
+    : Promise.resolve({ updated: false }));
+
+  if (!result?.updated && typeof STORAGE.updateNote !== "function") {
+    const hostname = new URL(note.url).hostname;
+    const existingNotes = await chrome.storage.local.get(hostname);
+    const notes = existingNotes[hostname] || [];
+    const noteIndex = notes.findIndex(
+      (n) => n.url === note.url && n.createdAt === note.createdAt
+    );
+    if (noteIndex === -1) return;
+
+    const stored = notes[noteIndex];
+    if (anchorId === "legacy-primary") {
+      stored.anchor = updatedAnchor;
+    } else {
+      const links = Array.isArray(stored.linkedAnchors) ? [...stored.linkedAnchors] : [];
+      const linkIndex = resolveLinkedAnchorIndexById(links, anchorId);
+      if (linkIndex === -1) return;
+      links[linkIndex] = {
+        ...links[linkIndex],
+        anchor: updatedAnchor,
+        url: currentUrl,
+      };
+      stored.linkedAnchors = links;
+    }
+
+    notes[noteIndex] = {
+      ...stored,
+      modifiedAt: new Date().toISOString(),
     };
-    stored.linkedAnchors = links;
+
+    await chrome.storage.local.set({ [hostname]: notes });
   }
 
-  notes[noteIndex] = {
-    ...stored,
-    modifiedAt: new Date().toISOString(),
-  };
-
-  await chrome.storage.local.set({ [hostname]: notes });
   await loadNotes(document.getElementById("searchInput").value || "");
   showToast("Anchor updated.", "success");
 }
@@ -819,32 +1024,56 @@ async function unlinkAnchor(index, anchorId) {
   const note = currentNotes[index];
   if (!note || !anchorId) return;
 
-  const hostname = new URL(note.url).hostname;
-  const existingNotes = await chrome.storage.local.get(hostname);
-  const notes = existingNotes[hostname] || [];
-  const noteIndex = notes.findIndex(
-    (n) => n.url === note.url && n.createdAt === note.createdAt
-  );
-  if (noteIndex === -1) return;
+  const result = await (typeof STORAGE.updateNote === "function"
+    ? STORAGE.updateNote(note, (stored) => {
+        const next = { ...stored };
+        if (anchorId === "legacy-primary") {
+          if (!next.anchor?.exact) return null;
+          next.anchor = null;
+        } else {
+          const links = Array.isArray(next.linkedAnchors) ? [...next.linkedAnchors] : [];
+          const removeIndex = resolveLinkedAnchorIndexById(links, anchorId);
+          if (removeIndex === -1) return null;
+          links.splice(removeIndex, 1);
+          next.linkedAnchors = links;
+        }
 
-  const stored = { ...notes[noteIndex] };
-  if (anchorId === "legacy-primary") {
-    if (!stored.anchor?.exact) return;
-    stored.anchor = null;
-  } else {
-    const links = Array.isArray(stored.linkedAnchors) ? [...stored.linkedAnchors] : [];
-    const removeIndex = resolveLinkedAnchorIndexById(links, anchorId);
-    if (removeIndex === -1) return;
-    links.splice(removeIndex, 1);
-    stored.linkedAnchors = links;
+        return {
+          ...next,
+          modifiedAt: new Date().toISOString(),
+        };
+      })
+    : Promise.resolve({ updated: false }));
+
+  if (!result?.updated && typeof STORAGE.updateNote !== "function") {
+    const hostname = new URL(note.url).hostname;
+    const existingNotes = await chrome.storage.local.get(hostname);
+    const notes = existingNotes[hostname] || [];
+    const noteIndex = notes.findIndex(
+      (n) => n.url === note.url && n.createdAt === note.createdAt
+    );
+    if (noteIndex === -1) return;
+
+    const stored = { ...notes[noteIndex] };
+    if (anchorId === "legacy-primary") {
+      if (!stored.anchor?.exact) return;
+      stored.anchor = null;
+    } else {
+      const links = Array.isArray(stored.linkedAnchors) ? [...stored.linkedAnchors] : [];
+      const removeIndex = resolveLinkedAnchorIndexById(links, anchorId);
+      if (removeIndex === -1) return;
+      links.splice(removeIndex, 1);
+      stored.linkedAnchors = links;
+    }
+
+    notes[noteIndex] = {
+      ...stored,
+      modifiedAt: new Date().toISOString(),
+    };
+
+    await chrome.storage.local.set({ [hostname]: notes });
   }
 
-  notes[noteIndex] = {
-    ...stored,
-    modifiedAt: new Date().toISOString(),
-  };
-
-  await chrome.storage.local.set({ [hostname]: notes });
   await loadNotes(document.getElementById("searchInput").value || "");
   showToast("Anchor unlinked.", "success");
 }
@@ -853,32 +1082,58 @@ async function unlinkPageLevelLink(index) {
   const note = currentNotes[index];
   if (!note) return;
 
-  const hostname = new URL(note.url).hostname;
-  const existingNotes = await chrome.storage.local.get(hostname);
-  const notes = existingNotes[hostname] || [];
-  const noteIndex = notes.findIndex(
-    (n) => n.url === note.url && n.createdAt === note.createdAt
-  );
-  if (noteIndex === -1) return;
+  const result = await (typeof STORAGE.updateNote === "function"
+    ? STORAGE.updateNote(note, (stored) => {
+        const next = { ...stored };
+        const links = Array.isArray(next.linkedAnchors) ? [...next.linkedAnchors] : [];
+        const removeIndex = links.findIndex(
+          (entry) => entry?.url === currentUrl && !entry?.anchor?.exact
+        );
+        if (removeIndex === -1) return null;
 
-  const stored = { ...notes[noteIndex] };
-  const links = Array.isArray(stored.linkedAnchors) ? [...stored.linkedAnchors] : [];
-  const removeIndex = links.findIndex(
-    (entry) => entry?.url === currentUrl && !entry?.anchor?.exact
-  );
-  if (removeIndex === -1) {
+        links.splice(removeIndex, 1);
+        next.linkedAnchors = links;
+        return {
+          ...next,
+          modifiedAt: new Date().toISOString(),
+        };
+      })
+    : Promise.resolve({ updated: false }));
+
+  if (!result?.updated && typeof STORAGE.updateNote === "function") {
     showToast("No page-level link found for this page.", "warning");
     return;
   }
 
-  links.splice(removeIndex, 1);
-  stored.linkedAnchors = links;
-  notes[noteIndex] = {
-    ...stored,
-    modifiedAt: new Date().toISOString(),
-  };
+  if (!result?.updated && typeof STORAGE.updateNote !== "function") {
+    const hostname = new URL(note.url).hostname;
+    const existingNotes = await chrome.storage.local.get(hostname);
+    const notes = existingNotes[hostname] || [];
+    const noteIndex = notes.findIndex(
+      (n) => n.url === note.url && n.createdAt === note.createdAt
+    );
+    if (noteIndex === -1) return;
 
-  await chrome.storage.local.set({ [hostname]: notes });
+    const stored = { ...notes[noteIndex] };
+    const links = Array.isArray(stored.linkedAnchors) ? [...stored.linkedAnchors] : [];
+    const removeIndex = links.findIndex(
+      (entry) => entry?.url === currentUrl && !entry?.anchor?.exact
+    );
+    if (removeIndex === -1) {
+      showToast("No page-level link found for this page.", "warning");
+      return;
+    }
+
+    links.splice(removeIndex, 1);
+    stored.linkedAnchors = links;
+    notes[noteIndex] = {
+      ...stored,
+      modifiedAt: new Date().toISOString(),
+    };
+
+    await chrome.storage.local.set({ [hostname]: notes });
+  }
+
   await loadNotes(document.getElementById("searchInput").value || "");
   showToast("Page-level link removed.", "success");
 }
@@ -941,68 +1196,137 @@ async function completeAttachExistingNote(mode) {
     return;
   }
 
-  const hostname = new URL(source.url).hostname;
-  const existingNotes = await chrome.storage.local.get(hostname);
-  const notes = existingNotes[hostname] || [];
-  const noteIndex = notes.findIndex(
-    (n) => n.url === source.url && n.createdAt === source.createdAt
-  );
-  if (noteIndex === -1) {
-    showToast("Could not locate source note to link.", "error");
+  const result = await (typeof STORAGE.updateNote === "function"
+    ? STORAGE.updateNote(source, (stored) => {
+        const links = Array.isArray(stored.linkedAnchors) ? [...stored.linkedAnchors] : [];
+
+        if (mode === "page") {
+          const alreadyPageLinked = stored.url === currentUrl || links.some(
+            (entry) => entry?.url === currentUrl && !entry?.anchor?.exact
+          );
+          if (alreadyPageLinked) return null;
+
+          links.push({
+            id: createAnchorLinkId(),
+            url: currentUrl,
+            attachedFrom: source.url,
+            anchor: null,
+            createdAt: new Date().toISOString(),
+            linkType: "page",
+          });
+        }
+
+        if (mode === "selection") {
+          const duplicate = links.some(
+            (entry) =>
+              entry?.url === currentUrl &&
+              entry?.anchor?.exact === selectionAnchor.exact &&
+              entry?.anchor?.prefix === selectionAnchor.prefix &&
+              entry?.anchor?.suffix === selectionAnchor.suffix
+          );
+          if (duplicate) return null;
+
+          links.push({
+            id: createAnchorLinkId(),
+            url: currentUrl,
+            attachedFrom: source.url,
+            anchor: selectionAnchor,
+            createdAt: new Date().toISOString(),
+          });
+        }
+
+        return {
+          ...stored,
+          linkedAnchors: links,
+          modifiedAt: new Date().toISOString(),
+        };
+      })
+    : Promise.resolve({ updated: false }));
+
+  if (!result?.updated && typeof STORAGE.updateNote === "function") {
+    if (result?.reason === "not-found") {
+      showToast("Could not locate source note to link.", "error");
+      closeAttachNoteModal();
+      return;
+    }
+
+    showToast(
+      mode === "page"
+        ? "This note is already linked to the current page."
+        : "This selected text is already linked to the note.",
+      "warning"
+    );
+    closeAttachNoteModal();
     return;
   }
 
-  const stored = notes[noteIndex];
-  const links = Array.isArray(stored.linkedAnchors) ? [...stored.linkedAnchors] : [];
-  if (mode === "page") {
-    const alreadyPageLinked = stored.url === currentUrl || links.some(
-      (entry) => entry?.url === currentUrl && !entry?.anchor?.exact
+  if (!result?.updated && typeof STORAGE.updateNote !== "function") {
+    const hostname = new URL(source.url).hostname;
+    const existingNotes = await chrome.storage.local.get(hostname);
+    const notes = existingNotes[hostname] || [];
+    const noteIndex = notes.findIndex(
+      (n) => n.url === source.url && n.createdAt === source.createdAt
     );
-    if (alreadyPageLinked) {
-      showToast("This note is already linked to the current page.", "warning");
-      closeAttachNoteModal();
+    if (noteIndex === -1) {
+      showToast("Could not locate source note to link.", "error");
       return;
     }
 
-    links.push({
-      id: createAnchorLinkId(),
-      url: currentUrl,
-      anchor: null,
-      createdAt: new Date().toISOString(),
-      linkType: "page",
-    });
-  }
+    const stored = notes[noteIndex];
+    const links = Array.isArray(stored.linkedAnchors) ? [...stored.linkedAnchors] : [];
+    if (mode === "page") {
+      const alreadyPageLinked = stored.url === currentUrl || links.some(
+        (entry) => entry?.url === currentUrl && !entry?.anchor?.exact
+      );
+      if (alreadyPageLinked) {
+        showToast("This note is already linked to the current page.", "warning");
+        closeAttachNoteModal();
+        return;
+      }
 
-  if (mode === "selection") {
-    const duplicate = links.some(
-      (entry) =>
-        entry?.url === currentUrl &&
-        entry?.anchor?.exact === selectionAnchor.exact &&
-        entry?.anchor?.prefix === selectionAnchor.prefix &&
-        entry?.anchor?.suffix === selectionAnchor.suffix
-    );
-
-    if (duplicate) {
-      showToast("This selected text is already linked to the note.", "warning");
-      closeAttachNoteModal();
-      return;
+      links.push({
+        id: createAnchorLinkId(),
+        url: currentUrl,
+        attachedFrom: source.url,
+        anchor: null,
+        createdAt: new Date().toISOString(),
+        linkType: "page",
+      });
     }
 
-    links.push({
-      id: createAnchorLinkId(),
-      url: currentUrl,
-      anchor: selectionAnchor,
-      createdAt: new Date().toISOString(),
-    });
+    if (mode === "selection") {
+      const duplicate = links.some(
+        (entry) =>
+          entry?.url === currentUrl &&
+          entry?.anchor?.exact === selectionAnchor.exact &&
+          entry?.anchor?.prefix === selectionAnchor.prefix &&
+          entry?.anchor?.suffix === selectionAnchor.suffix
+      );
+
+      if (duplicate) {
+        showToast("This selected text is already linked to the note.", "warning");
+        closeAttachNoteModal();
+        return;
+      }
+
+      links.push({
+        id: createAnchorLinkId(),
+        url: currentUrl,
+        attachedFrom: source.url,
+        anchor: selectionAnchor,
+        createdAt: new Date().toISOString(),
+      });
+    }
+
+    notes[noteIndex] = {
+      ...stored,
+      linkedAnchors: links,
+      modifiedAt: new Date().toISOString(),
+    };
+
+    await chrome.storage.local.set({ [hostname]: notes });
   }
 
-  notes[noteIndex] = {
-    ...stored,
-    linkedAnchors: links,
-    modifiedAt: new Date().toISOString(),
-  };
-
-  await chrome.storage.local.set({ [hostname]: notes });
   await refreshTagCatalog();
   await loadNotes(document.getElementById("searchInput").value || "");
   closeAttachNoteModal();
@@ -1115,6 +1439,41 @@ function getLinkedPageUrls(note) {
   return note.linkedAnchors
     .map((entry) => entry?.url)
     .filter((url) => typeof url === "string" && url.length > 0);
+}
+
+function getAttachmentSourceLabel(url) {
+  try {
+    const parsed = new URL(url);
+    if (isYouTubeVideo(parsed)) {
+      return `${parsed.hostname}/watch?v=${parsed.searchParams.get("v") || ""}`;
+    }
+    const path = parsed.pathname === "/" ? "" : parsed.pathname;
+    return `${parsed.hostname}${path}`;
+  } catch {
+    return trimToLength(String(url || ""), 80);
+  }
+}
+
+function getAttachmentSourcesForPage(note, pageUrl) {
+  if (!note || note.url === pageUrl) return [];
+
+  const sources = new Set();
+  if (Array.isArray(note.linkedAnchors)) {
+    note.linkedAnchors.forEach((entry) => {
+      if (entry?.url !== pageUrl) return;
+      const source = typeof entry?.attachedFrom === "string" ? entry.attachedFrom : note.url;
+      if (source && source !== pageUrl) {
+        sources.add(source);
+      }
+    });
+  }
+
+  // Backward-compatible fallback for existing links without attachedFrom metadata.
+  if (!sources.size && noteAppliesToPage(note, pageUrl) && note.url !== pageUrl) {
+    sources.add(note.url);
+  }
+
+  return Array.from(sources);
 }
 
 function noteAppliesToPage(note, pageUrl) {
@@ -1585,55 +1944,59 @@ function hideToast() {
 }
 
 async function rewriteTagsEverywhere(mapTagFn) {
-  const data = await chrome.storage.local.get(null);
-  const updates = {};
+  if (typeof STORAGE.rewriteTags === "function") {
+    await STORAGE.rewriteTags((tag) => mapTagFn(normalizeTag(tag)));
+  } else {
+    const data = await chrome.storage.local.get(null);
+    const updates = {};
 
-  const storedCatalog = Array.isArray(data[TAGS_STORAGE_KEY])
-    ? data[TAGS_STORAGE_KEY]
-    : [];
-  const rewrittenCatalog = Array.from(
-    new Set(
-      storedCatalog
-        .map((tag) => normalizeTag(tag))
-        .map((tag) => mapTagFn(tag))
-        .map((tag) => normalizeTag(tag))
-        .filter(Boolean)
-    )
-  ).sort((a, b) => a.localeCompare(b));
+    const storedCatalog = Array.isArray(data[TAGS_STORAGE_KEY])
+      ? data[TAGS_STORAGE_KEY]
+      : [];
+    const rewrittenCatalog = Array.from(
+      new Set(
+        storedCatalog
+          .map((tag) => normalizeTag(tag))
+          .map((tag) => mapTagFn(tag))
+          .map((tag) => normalizeTag(tag))
+          .filter(Boolean)
+      )
+    ).sort((a, b) => a.localeCompare(b));
 
-  updates[TAGS_STORAGE_KEY] = rewrittenCatalog;
+    updates[TAGS_STORAGE_KEY] = rewrittenCatalog;
 
-  Object.entries(data).forEach(([key, value]) => {
-    if (key === TAGS_STORAGE_KEY || !Array.isArray(value)) return;
+    Object.entries(data).forEach(([key, value]) => {
+      if (key === TAGS_STORAGE_KEY || !Array.isArray(value)) return;
 
-    let changedInBucket = false;
-    const updatedNotes = value.map((note) => {
-      const currentTags = (note.tags || []).map((tag) => normalizeTag(tag)).filter(Boolean);
-      const mapped = currentTags
-        .map((tag) => mapTagFn(tag))
-        .map((tag) => normalizeTag(tag))
-        .filter(Boolean);
-      const deduped = Array.from(new Set(mapped));
-      const changed = !areTagArraysEqual(deduped, currentTags);
+      let changedInBucket = false;
+      const updatedNotes = value.map((note) => {
+        const currentTags = (note.tags || []).map((tag) => normalizeTag(tag)).filter(Boolean);
+        const mapped = currentTags
+          .map((tag) => mapTagFn(tag))
+          .map((tag) => normalizeTag(tag))
+          .filter(Boolean);
+        const deduped = Array.from(new Set(mapped));
+        const changed = !areTagArraysEqual(deduped, currentTags);
 
-      if (changed) {
-        changedInBucket = true;
-        return {
-          ...note,
-          tags: deduped,
-          modifiedAt: new Date().toISOString(),
-        };
+        if (changed) {
+          changedInBucket = true;
+          return {
+            ...note,
+            tags: deduped,
+            modifiedAt: new Date().toISOString(),
+          };
+        }
+        return note;
+      });
+
+      if (changedInBucket) {
+        updates[key] = updatedNotes;
       }
-      return note;
     });
 
-    if (changedInBucket) {
-      updates[key] = updatedNotes;
+    if (Object.keys(updates).length) {
+      await chrome.storage.local.set(updates);
     }
-  });
-
-  if (Object.keys(updates).length) {
-    await chrome.storage.local.set(updates);
   }
 
   await refreshTagCatalog();

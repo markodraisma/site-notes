@@ -2,7 +2,9 @@
   const ANCHOR_CLASS = "sitenotes-anchor";
   const TOOLTIP_ID = "sitenotes-anchor-tooltip";
   const STYLE_ID = "sitenotes-anchor-style";
+  const TAGS_STORAGE_KEY = "__siteNotesTags__";
   const MARKDOWN = globalThis.SiteNotesMarkdown || {};
+  let renderTimerId = null;
 
   function isYouTubeVideo(url) {
     return (
@@ -371,6 +373,30 @@
     return results;
   }
 
+  function noteHasAnchorForUrl(note, url) {
+    if (!note || typeof note !== "object") return false;
+    return getAnchorsForUrl(note, url).length > 0;
+  }
+
+  function bucketHasAnchorForUrl(bucketValue, url) {
+    if (!Array.isArray(bucketValue)) return false;
+    return bucketValue.some((note) => noteHasAnchorForUrl(note, url));
+  }
+
+  function shouldRerenderForStorageChanges(changes) {
+    const normalizedUrl = getNormalizedPageUrl();
+
+    return Object.entries(changes || {}).some(([key, delta]) => {
+      if (key === TAGS_STORAGE_KEY) return false;
+      if (!delta) return false;
+
+      return (
+        bucketHasAnchorForUrl(delta.oldValue, normalizedUrl) ||
+        bucketHasAnchorForUrl(delta.newValue, normalizedUrl)
+      );
+    });
+  }
+
   function getNoteKey(note) {
     return `${note.url}::${note.createdAt}`;
   }
@@ -421,10 +447,15 @@
     attachTooltipHandlers();
   }
 
-  function scheduleRender() {
-    window.setTimeout(() => {
+  function scheduleRender(delayMs = 150) {
+    if (renderTimerId) {
+      window.clearTimeout(renderTimerId);
+    }
+
+    renderTimerId = window.setTimeout(() => {
+      renderTimerId = null;
       renderAnchors();
-    }, 250);
+    }, delayMs);
   }
 
   document.addEventListener("DOMContentLoaded", scheduleRender);
@@ -432,7 +463,9 @@
 
   chrome.storage.onChanged.addListener((changes, areaName) => {
     if (areaName !== "local") return;
-    if (changes) scheduleRender();
+    if (shouldRerenderForStorageChanges(changes)) {
+      scheduleRender();
+    }
   });
 
   scheduleRender();

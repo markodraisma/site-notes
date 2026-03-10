@@ -20,6 +20,7 @@ The **Site Notes Chrome Extension** is a lightweight tool designed to enhance yo
 ### 2. ✍️ Basic Markdown Notes
 - Write notes in plain markdown while editing.
 - Read mode renders basic rich text: links, bold, italic, inline code, paragraphs, and line breaks.
+- Add-note modal includes a compact markdown quick help for headings, lists, and links.
 
 ### 3. 🔗 Link-Friendly Reading
 - Markdown links like `[title](https://example.com)` are clickable.
@@ -48,6 +49,7 @@ The **Site Notes Chrome Extension** is a lightweight tool designed to enhance yo
 ### 8. 🧷 Attach Existing Notes Anywhere
 - Attach an existing note to the current page.
 - Optionally attach it to currently selected text through an explicit attach modal.
+- Linked notes show "Attached from ..." context in the side panel for better traceability.
 
 ### 9. 🖱️ Smart Click Behavior for Anchors
 - If an anchored note contains links, clicking highlighted anchor text opens the first note link in a new tab.
@@ -57,6 +59,12 @@ The **Site Notes Chrome Extension** is a lightweight tool designed to enhance yo
 - All data is stored locally with `chrome.storage.local`.
 - Import/export backups and reset all data from Settings.
 - Works offline; no external backend required.
+- Storage schema versioning and automatic migration keep older local data compatible.
+
+### 11. ⌨️ Keyboard Shortcuts
+- `Ctrl/Cmd + Enter`: Save note while Add Note modal is open.
+- `Esc`: Close the active modal.
+- `/`: Focus the search input when not typing in a field.
 
 ## Files
 ### Core Components
@@ -64,6 +72,7 @@ The **Site Notes Chrome Extension** is a lightweight tool designed to enhance yo
 - `background.js`: The background script managing extension logic.
 - `sidepanel.html`: The user interface for the extension’s side panel.
 - `sidepanel.js`: Core side panel logic for notes, tags, markdown rendering, anchors, and modals.
+- `storage.js`: Shared storage service for note CRUD and tag rewrite operations.
 - `contentScript.js`: In-page anchor highlighting, rich tooltip rendering, and click behavior for anchored notes.
 
 ### Assets
@@ -96,6 +105,7 @@ The **Site Notes Chrome Extension** is a lightweight tool designed to enhance yo
 4. Manage tags in Settings -> Manage Tags (including nested tags and parent changes).
 5. Attach existing notes to the current page or selected text using the attach action.
 6. Revisit pages to see anchored highlights and tooltips on matching text.
+7. Use keyboard shortcuts for faster navigation and note capture.
 
 ## Development
 ### Prerequisites

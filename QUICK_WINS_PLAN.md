@@ -8,9 +8,9 @@
 
 ## Progress Snapshot
 - Priority 1: 4/4 done
-- Priority 2: 0/3 done
-- Priority 3: 0/3 done
-- Overall: 4/10 complete
+- Priority 2: 3/3 done
+- Priority 3: 3/3 done
+- Overall: 10/10 complete
 
 ## Goal
 Improve the project with high-ROI changes across features, usability, and maintainability while minimizing regression risk.
@@ -79,31 +79,31 @@ Improve the project with high-ROI changes across features, usability, and mainta
 
 ## Priority 2: Medium Impact, Low Effort
 
-### 5. Keyboard Shortcuts [ ]
+### 5. Keyboard Shortcuts [x]
 - Category: Usability
 - Benefit: Faster workflows for power users.
 - Effort: Low
 - Owner: TBD
 - Last updated: 2026-03-10
 - Tasks:
-  - [ ] `Ctrl/Cmd+Enter` save note.
-  - [ ] `Esc` close active modal.
-  - [ ] `/` focus search input.
+  - [x] `Ctrl/Cmd+Enter` save note.
+  - [x] `Esc` close active modal.
+  - [x] `/` focus search input.
 - Acceptance:
-  - [ ] Shortcuts work reliably in sidepanel and do not conflict with text input intent.
+  - [x] Shortcuts work reliably in sidepanel and do not conflict with text input intent.
 
-### 6. Markdown Help Hint [ ]
+### 6. Markdown Help Hint [x]
 - Category: Usability
 - Benefit: Improves discoverability of formatting.
 - Effort: Low
 - Owner: TBD
 - Last updated: 2026-03-10
 - Tasks:
-  - [ ] Add compact markdown cheat sheet in note modal.
+  - [x] Add compact markdown cheat sheet in note modal.
 - Acceptance:
-  - [ ] Users can discover link, heading, and list syntax quickly.
+  - [x] Users can discover link, heading, and list syntax quickly.
 
-### 7. Attached-From Visibility [ ]
+### 7. Attached-From Visibility [x]
 - Category: Feature
 - Why: `attachedFrom` is stored but not surfaced.
 - Benefit: Better context and traceability.
@@ -111,13 +111,13 @@ Improve the project with high-ROI changes across features, usability, and mainta
 - Owner: TBD
 - Last updated: 2026-03-10
 - Tasks:
-  - [ ] Show "Attached from <url>" in note card footer or metadata area.
+  - [x] Show "Attached from <url>" in note card footer or metadata area.
 - Acceptance:
-  - [ ] Attached notes clearly show origin.
+  - [x] Attached notes clearly show origin.
 
 ## Priority 3: Scale and Code Health
 
-### 8. Storage Service Layer [ ]
+### 8. Storage Service Layer [x]
 - Category: Maintainability
 - Why: Storage operations are spread across many functions.
 - Benefit: Easier schema evolution and fewer bugs.
@@ -125,17 +125,17 @@ Improve the project with high-ROI changes across features, usability, and mainta
 - Owner: TBD
 - Last updated: 2026-03-10
 - Tasks:
-  - [ ] Introduce storage service module:
-  - [ ] `getAllNotes`
-  - [ ] `saveNote`
-  - [ ] `updateNote`
-  - [ ] `deleteNote`
-  - [ ] `rewriteTags`
-  - [ ] Use service from sidepanel.
+  - [x] Introduce storage service module:
+  - [x] `getAllNotes`
+  - [x] `saveNote`
+  - [x] `updateNote`
+  - [x] `deleteNote`
+  - [x] `rewriteTags`
+  - [x] Use service from sidepanel.
 - Acceptance:
-  - [ ] Sidepanel uses service methods, direct storage access reduced.
+  - [x] Sidepanel uses service methods, direct storage access reduced.
 
-### 9. Smarter Content Script Re-rendering [ ]
+### 9. Smarter Content Script Re-rendering [x]
 - Category: Performance
 - Why: Content script rerenders on any local storage change.
 - Benefit: Lower CPU churn on active pages.
@@ -143,12 +143,12 @@ Improve the project with high-ROI changes across features, usability, and mainta
 - Owner: TBD
 - Last updated: 2026-03-10
 - Tasks:
-  - [ ] Debounce rerenders.
-  - [ ] Filter changes to only relevant note keys/URLs.
+  - [x] Debounce rerenders.
+  - [x] Filter changes to only relevant note keys/URLs.
 - Acceptance:
-  - [ ] Fewer redundant rerenders during frequent updates.
+  - [x] Fewer redundant rerenders during frequent updates.
 
-### 10. Schema Versioning [ ]
+### 10. Schema Versioning [x]
 - Category: Maintainability
 - Why: Feature growth increases migration needs.
 - Benefit: Safe future migrations.
@@ -156,10 +156,10 @@ Improve the project with high-ROI changes across features, usability, and mainta
 - Owner: TBD
 - Last updated: 2026-03-10
 - Tasks:
-  - [ ] Add `dataVersion` key.
-  - [ ] Add migration pipeline for older data formats.
+  - [x] Add `dataVersion` key.
+  - [x] Add migration pipeline for older data formats.
 - Acceptance:
-  - [ ] Older storage can upgrade automatically.
+  - [x] Older storage can upgrade automatically.
 
 ## Suggested Execution Order
 1. Shared markdown engine
@@ -197,3 +197,9 @@ Improve the project with high-ROI changes across features, usability, and mainta
 - 2026-03-10: Completed #2 Re-anchor Missing Anchors.
 - 2026-03-10: Completed #3 Undo for Delete.
 - 2026-03-10: Completed #4 Toast Feedback for Core Actions.
+- 2026-03-10: Completed #5 Keyboard Shortcuts.
+- 2026-03-10: Completed #6 Markdown Help Hint.
+- 2026-03-10: Completed #7 Attached-From Visibility.
+- 2026-03-10: Completed #8 Storage Service Layer.
+- 2026-03-10: Completed #9 Smarter Content Script Re-rendering.
+- 2026-03-10: Completed #10 Schema Versioning.
