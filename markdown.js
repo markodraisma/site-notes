@@ -24,7 +24,15 @@
   function renderInlineMarkdown(text) {
     let html = escapeHtml(text || "");
 
-    html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_, label, url) => {
+    html = html.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (_, alt, url) => {
+      const safe = sanitizeUrl(url);
+      if (safe === "#") return alt || "";
+      return `<img src="${safe}" alt="${alt}" loading="lazy" />`;
+    });
+
+    html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (full, label, url, offset, source) => {
+      const previousChar = offset > 0 ? source[offset - 1] : "";
+      if (previousChar === "!") return full;
       const safe = sanitizeUrl(url);
       if (safe === "#") return label;
       return `<a href="${safe}" target="_blank" rel="noopener noreferrer">${label}</a>`;
@@ -102,10 +110,15 @@
   function extractFirstLinkFromMarkdown(content) {
     const text = String(content || "");
 
-    const mdMatch = text.match(/\[[^\]]+\]\(([^)]+)\)/);
-    if (mdMatch && mdMatch[1]) {
-      const safe = sanitizeUrl(mdMatch[1]);
-      if (safe !== "#") return safe;
+    const mdRegex = /\[[^\]]+\]\(([^)]+)\)/g;
+    let mdMatch = mdRegex.exec(text);
+    while (mdMatch) {
+      const previousChar = mdMatch.index > 0 ? text[mdMatch.index - 1] : "";
+      if (previousChar !== "!") {
+        const safe = sanitizeUrl(mdMatch[1]);
+        if (safe !== "#") return safe;
+      }
+      mdMatch = mdRegex.exec(text);
     }
 
     const plainMatch = text.match(/https?:\/\/[^\s)]+/);

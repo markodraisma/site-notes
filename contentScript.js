@@ -115,6 +115,15 @@
         text-decoration: underline;
       }
 
+      #${TOOLTIP_ID} img {
+        display: block;
+        max-width: 100%;
+        max-height: 180px;
+        height: auto;
+        border-radius: 6px;
+        margin: 6px 0;
+      }
+
       #${TOOLTIP_ID} code {
         font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
           "Liberation Mono", "Courier New", monospace;
