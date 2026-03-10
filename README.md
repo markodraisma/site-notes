@@ -14,43 +14,57 @@ The **Site Notes Chrome Extension** is a lightweight tool designed to enhance yo
 
 ## Features
 ### 1. 📝 Contextual Note-Taking
-- Save notes directly associated with specific web pages or websites.
-- Automatically link notes to the exact URL for easy retrieval.
+- Save notes per exact page URL (with special handling for YouTube video URLs).
+- Switch between Page Notes, Domain Notes, and All Notes.
 
+### 2. ✍️ Basic Markdown Notes
+- Write notes in plain markdown while editing.
+- Read mode renders basic rich text: links, bold, italic, inline code, paragraphs, and line breaks.
 
-### 2. 🏷️ Tagging System
-- Add tags to organize your notes effectively.
-- Automatically tag certain URLs, like YouTube videos, with a v tag for better organization.
+### 3. 🔗 Link-Friendly Reading
+- Markdown links like `[title](https://example.com)` are clickable.
+- Plain URLs are auto-linked in rendered notes.
 
-### 3. 🔍 Powerful Search and Filtering
-- Quickly search through your notes by keywords or tags.
-- Filter notes based on associated tags for focused access.
+### 4. 🏷️ Advanced Tag Management (Gmail-style)
+- Add tags while creating or editing notes.
+- Choose existing tags from a picker.
+- Create nested tags using `/` (for example `work/project`).
+- Manage tags globally: create, edit (rename + change parent), and delete.
+- Renaming/deleting propagates across all notes and nested children.
 
-### 4. 🖼️ View Modes
-- Switch between "Page Notes" (for notes tied to the active page) and "All Notes" (view all saved notes).
+### 5. 🔍 Search and Filtering
+- Search by note text and tags.
+- Quickly find notes in the current page/domain or across all notes.
 
-### 5. 📋 Compact Side Panel Interface
-- Access the extension via a sleek side panel that doesn’t disrupt your browsing experience.
-- Easily create, edit, and delete notes directly from the panel.
+### 6. 📌 Text Anchors (Selection-Aware Notes)
+- Create notes attached to selected text on a page.
+- Notes include anchor metadata and show selected text snippets in the side panel.
+- If DOM/content changes and anchor text is missing later, notes gracefully fall back to page-level behavior.
 
-### 6. 🔒 Privacy-Focused
-- All your data is stored locally on your device.
-- No external servers or third-party apps are used, ensuring maximum privacy and security.
+### 7. 🌐 In-Page Highlights and Tooltips
+- Anchored text is highlighted directly on the page.
+- Hovering highlighted text shows a rich tooltip preview of the note (including markdown rendering).
 
-### 7. ✨ Seamless User Experience
-- Automatically fetch the website favicon and display it alongside notes for a more personalized touch.
-- Works offline, so your notes are always accessible.
+### 8. 🧷 Attach Existing Notes Anywhere
+- Attach an existing note to the current page.
+- Optionally attach it to currently selected text through an explicit attach modal.
 
-### 8. ⚙️ Customization and Management
-- Export and import notes for backup or transferring to another device.
-- Reset your data anytime with the built-in settings panel.
+### 9. 🖱️ Smart Click Behavior for Anchors
+- If an anchored note contains links, clicking highlighted anchor text opens the first note link in a new tab.
+- Existing native page links are respected and not overridden.
+
+### 10. ⚙️ Data and Privacy
+- All data is stored locally with `chrome.storage.local`.
+- Import/export backups and reset all data from Settings.
+- Works offline; no external backend required.
 
 ## Files
 ### Core Components
 - `manifest.json`: The configuration file that defines the extension’s permissions, background scripts, and metadata.
 - `background.js`: The background script managing extension logic.
 - `sidepanel.html`: The user interface for the extension’s side panel.
-- `sidepanel.js`: Contains functionality to manage notes within the side panel.
+- `sidepanel.js`: Core side panel logic for notes, tags, markdown rendering, anchors, and modals.
+- `contentScript.js`: In-page anchor highlighting, rich tooltip rendering, and click behavior for anchored notes.
 
 ### Assets
 - `icon16.png`: 16x16 icon for the extension.
@@ -76,9 +90,12 @@ The **Site Notes Chrome Extension** is a lightweight tool designed to enhance yo
 5. The extension will appear in your toolbar, ready to use!
 
 ## Usage
-1. Click on the extension icon in the Chrome toolbar to open the side panel.
-2. Add, edit, or delete notes for the current website.
-3. Revisit the website to see your saved notes displayed automatically.
+1. Select text on a page (optional), then open the side panel and create a note.
+2. Add tags by typing or selecting existing tags.
+3. Use markdown in note content for links and basic formatting.
+4. Manage tags in Settings -> Manage Tags (including nested tags and parent changes).
+5. Attach existing notes to the current page or selected text using the attach action.
+6. Revisit pages to see anchored highlights and tooltips on matching text.
 
 ## Development
 ### Prerequisites

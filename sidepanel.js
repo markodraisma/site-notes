@@ -6,6 +6,9 @@ let availableTags = [];
 let pendingSelectionAnchor = null;
 let anchorStateByNoteId = {};
 let pendingAttachContext = null;
+let deleteUndoState = null;
+
+const MARKDOWN = globalThis.SiteNotesMarkdown || {};
 
 const TAGS_STORAGE_KEY = "__siteNotesTags__";
 
@@ -119,6 +122,10 @@ function setupEventListeners() {
     .getElementById("importFileInput")
     .addEventListener("change", importData);
 
+  document.getElementById("toastCloseBtn")?.addEventListener("click", () => {
+    hideToast();
+  });
+
   // Global tag manager
   document
     .getElementById("manageTagsBtn")
@@ -190,12 +197,12 @@ async function loadNotes(searchTerm = "") {
 
   switch (viewMode) {
     case "page":
-      filteredNotes = allNotes.filter((note) => note.url === currentUrl);
+      filteredNotes = allNotes.filter((note) => noteAppliesToPage(note, currentUrl));
       break;
     case "domain":
       filteredNotes = allNotes.filter((note) => {
-        const noteUrl = new URL(note.url);
-        return noteUrl.hostname === currentHostname;
+        if (noteUrlHasHostname(note.url, currentHostname)) return true;
+        return getLinkedPageUrls(note).some((url) => noteUrlHasHostname(url, currentHostname));
       });
       break;
     case "all":
@@ -271,17 +278,43 @@ function createNoteHTML(note, index) {
     ? noteUrl.hostname
     : noteUrl.pathname;
 
-  const noteId = getNoteId(note);
-  const anchorState = anchorStateByNoteId[noteId] || null;
-  const hasAnchor = Boolean(note.anchor?.exact);
-  const anchorSnippet = hasAnchor
-    ? escapeHtml(trimToLength(note.anchor.exact, 180))
+  const anchorsForCurrentPage = getAnchorsForPage(note, currentUrl);
+  const pageLinkedWithoutAnchor =
+    note.url !== currentUrl && hasPageLevelLinkForUrl(note, currentUrl);
+  const anchorRows = anchorsForCurrentPage
+    .map((entry, idx) => {
+      const state = getAnchorState(note, entry.id);
+      const statusClass = state === "missing" ? "warning" : "";
+      const statusLabel = state === "missing" ? "Missing" : "Found";
+      const anchorSnippet = escapeHtml(trimToLength(entry.anchor?.exact || "", 160));
+      return `
+        <div class="anchor-row ${statusClass}">
+          <div class="anchor-row-head">
+            <button type="button" class="btn-link anchor-jump-btn" data-anchor-id="${entry.id}">Anchor ${idx + 1}</button>
+            <span class="anchor-row-state">${statusLabel}</span>
+            <button type="button" class="btn-link reanchor-btn" data-anchor-id="${entry.id}">Re-anchor</button>
+            <button type="button" class="btn-link delete unlink-anchor-btn" data-anchor-id="${entry.id}">Unlink</button>
+          </div>
+          <div class="anchor-quote" title="Selected text">"${anchorSnippet}"</div>
+        </div>
+      `;
+    })
+    .join("");
+
+  const anchorsHtml = anchorsForCurrentPage.length
+    ? `<div class="anchor-pill"><i class="fas fa-link"></i> ${anchorsForCurrentPage.length} anchor${
+        anchorsForCurrentPage.length === 1 ? "" : "s"
+      } on this page</div>${anchorRows}`
     : "";
-  const anchorStatusHtml = !hasAnchor
-    ? ""
-    : anchorState?.status === "missing"
-    ? '<div class="anchor-clue warning"><strong>Anchor changed.</strong> Selected text was not found in the current page DOM. This note is shown as a page-level fallback.</div>'
-    : '<div class="anchor-pill"><i class="fas fa-link"></i> Anchored to selected text</div>';
+
+  const pageLinkHtml = pageLinkedWithoutAnchor
+    ? '<div class="anchor-pill"><i class="fas fa-link"></i> Linked to this page (page-level) <button type="button" class="btn-link delete unlink-page-link-btn">Unlink</button></div>'
+    : "";
+
+  const selectedTags = (note.tags || [])
+    .map((tag) => normalizeTag(tag))
+    .filter(Boolean)
+    .sort((a, b) => a.localeCompare(b));
 
   return `
     <div class="note-card" data-index="${index}" data-url="${note.url}">
@@ -317,25 +350,14 @@ function createNoteHTML(note, index) {
         <textarea class="note-textarea" data-role="content-editor" style="display: none;">${escapeHtml(
           note.content || ""
         )}</textarea>
-        <div class="tags-container" data-role="tags-display">
-          ${(note.tags || []).map((tag) => `<span class="tag">#${tag}</span>`).join("")}
-        </div>
+        <div class="tags-container" data-role="tags-display">${selectedTags
+          .map((tag) => `<span class="tag selected-tag">#${escapeHtml(tag)}</span>`)
+          .join("")}</div>
         <div class="tags-input" data-role="tags-editor" style="display: none;">
-          ${(note.tags || [])
-            .map(
-              (tag) =>
-                `<span class="tag">#${tag}<button type="button" title="Remove tag">&times;</button></span>`
-            )
-            .join("")}
           <input type="text" placeholder="Add tags (press Enter)" style="border: none; outline: none; flex: 1;">
         </div>
-        <div class="available-tags" data-role="tags-picker" style="display: none;"></div>
-        ${anchorStatusHtml}
-        ${
-          hasAnchor
-            ? `<div class="anchor-quote" title="Selected text">"${anchorSnippet}"</div>`
-            : ""
-        }
+        ${pageLinkHtml}
+        ${anchorsHtml}
       </div>
       <div class="note-footer">
         <span class="timestamp">Created: ${created}</span>
@@ -354,22 +376,45 @@ function attachNoteEventListeners(index) {
   const textarea = noteCard.querySelector('[data-role="content-editor"]');
   const tagsDisplay = noteCard.querySelector('[data-role="tags-display"]');
   const tagsEditor = noteCard.querySelector('[data-role="tags-editor"]');
-  const tagsInput = tagsEditor?.querySelector("input");
-  const tagsPicker = noteCard.querySelector('[data-role="tags-picker"]');
   const attachBtn = noteCard.querySelector(".attach-btn");
+  const reanchorBtns = Array.from(noteCard.querySelectorAll(".reanchor-btn"));
+  const anchorJumpBtns = Array.from(noteCard.querySelectorAll(".anchor-jump-btn"));
+  const unlinkAnchorBtns = Array.from(noteCard.querySelectorAll(".unlink-anchor-btn"));
+  const unlinkPageBtn = noteCard.querySelector(".unlink-page-link-btn");
   const editBtn = noteCard.querySelector(".edit-btn");
   const deleteBtn = noteCard.querySelector(".delete-btn");
   let originalContent;
   let originalTags = [];
 
-  if (tagsInput) {
-    tagsInput.addEventListener("keydown", handleTagInput);
-  }
-  attachTagDeleteHandlers(tagsEditor);
+  bindTagInputListener(tagsEditor?.querySelector("input"));
 
   if (attachBtn) {
     attachBtn.addEventListener("click", async () => {
       await attachExistingNote(index);
+    });
+  }
+
+  reanchorBtns.forEach((button) => {
+    button.addEventListener("click", async () => {
+      await reanchorNote(index, button.dataset.anchorId || "");
+    });
+  });
+
+  anchorJumpBtns.forEach((button) => {
+    button.addEventListener("click", async () => {
+      await jumpToAnchor(index, button.dataset.anchorId || "");
+    });
+  });
+
+  unlinkAnchorBtns.forEach((button) => {
+    button.addEventListener("click", async () => {
+      await unlinkAnchor(index, button.dataset.anchorId || "");
+    });
+  });
+
+  if (unlinkPageBtn) {
+    unlinkPageBtn.addEventListener("click", async () => {
+      await unlinkPageLevelLink(index);
     });
   }
 
@@ -379,22 +424,24 @@ function attachNoteEventListeners(index) {
     if (isEditing) {
       // Enter edit mode
       originalContent = textarea.value;
-      originalTags = getTagsFromEditor(tagsEditor);
+      originalTags = (currentNotes[index]?.tags || [])
+        .map((tag) => normalizeTag(tag))
+        .filter(Boolean)
+        .sort((a, b) => a.localeCompare(b));
       if (contentDisplay) contentDisplay.style.display = "none";
       textarea.style.display = "block";
       textarea.focus();
       if (tagsDisplay) tagsDisplay.style.display = "none";
-      if (tagsEditor) tagsEditor.style.display = "flex";
-      if (tagsPicker) {
-        tagsPicker.style.display = "flex";
-        buildTagPicker(tagsPicker, tagsEditor);
+      if (tagsEditor) {
+        tagsEditor.style.display = "flex";
+        renderTagEditor(tagsEditor, note.tags || []);
       }
       editBtn.innerHTML = '<i class="fas fa-save"></i>';
       editBtn.title = "Save";
     } else {
       // Save changes
       const newContent = textarea.value.trim();
-      const newTags = collectTagsForSave(tagsEditor, tagsPicker);
+      const newTags = collectTagsForSave(tagsEditor);
       const contentChanged = newContent !== originalContent;
       const tagsChanged = !areTagArraysEqual(newTags, originalTags);
       if (contentChanged || tagsChanged) {
@@ -406,7 +453,6 @@ function attachNoteEventListeners(index) {
       if (contentDisplay) contentDisplay.style.display = "block";
       if (tagsDisplay) tagsDisplay.style.display = "";
       if (tagsEditor) tagsEditor.style.display = "none";
-      if (tagsPicker) tagsPicker.style.display = "none";
       editBtn.innerHTML = '<i class="fas fa-pen"></i>';
       editBtn.title = "Edit";
     }
@@ -423,7 +469,7 @@ function attachNoteEventListeners(index) {
 async function openNoteModal() {
   document.getElementById("noteModal").classList.add("active");
   await refreshTagCatalog();
-  renderNewNoteTagPicker();
+  renderTagEditor(document.getElementById("tagsInput"), []);
   pendingSelectionAnchor = await captureSelectionAnchorFromActiveTab();
   renderSelectionAnchorHint();
   document.getElementById("newNoteContent").focus();
@@ -437,7 +483,6 @@ function closeNoteModal() {
   `;
   const input = document.querySelector("#tagsInput input");
   bindTagInputListener(input);
-  document.getElementById("noteTagPicker").innerHTML = "";
   pendingSelectionAnchor = null;
   const hint = document.getElementById("selectionAnchorHint");
   if (hint) {
@@ -531,8 +576,7 @@ async function saveNewNote() {
   if (!content) return;
 
   const tags = collectTagsForSave(
-    document.getElementById("tagsInput"),
-    document.getElementById("noteTagPicker")
+    document.getElementById("tagsInput")
   );
 
   const newNote = {
@@ -551,7 +595,8 @@ async function saveNewNote() {
   await chrome.storage.local.set({ [currentHostname]: notes });
   await ensureTagsInCatalog(tags);
   closeNoteModal();
-  loadNotes();
+  await loadNotes();
+  showToast("Note saved.", "success");
 }
 
 async function saveNoteEdit(index, content, tags) {
@@ -575,7 +620,8 @@ async function saveNoteEdit(index, content, tags) {
     await chrome.storage.local.set({ [hostname]: notes });
     await ensureTagsInCatalog(tags);
     await refreshTagCatalog();
-    loadNotes();
+    await loadNotes();
+    showToast("Note updated.", "success");
   }
 }
 
@@ -590,11 +636,251 @@ async function deleteNote(index) {
   );
 
   if (noteIndex !== -1) {
-    notes.splice(noteIndex, 1);
+    const [deletedNote] = notes.splice(noteIndex, 1);
     await chrome.storage.local.set({ [hostname]: notes });
     await refreshTagCatalog();
-    loadNotes();
+    await loadNotes();
+    scheduleDeleteUndo({ hostname, note: deletedNote, noteIndex });
+    showToast("Note deleted.", "warning", {
+      label: "Undo",
+      onClick: undoLastDelete,
+    }, 9000);
   }
+}
+
+async function undoLastDelete() {
+  if (!deleteUndoState?.note || !deleteUndoState.hostname) return;
+
+  const { hostname, note, noteIndex } = deleteUndoState;
+  if (deleteUndoState.timerId) {
+    clearTimeout(deleteUndoState.timerId);
+  }
+  deleteUndoState = null;
+
+  const existingNotes = await chrome.storage.local.get(hostname);
+  const notes = existingNotes[hostname] || [];
+  const insertAt = Math.max(0, Math.min(noteIndex, notes.length));
+  notes.splice(insertAt, 0, note);
+
+  await chrome.storage.local.set({ [hostname]: notes });
+  await refreshTagCatalog();
+  await loadNotes(document.getElementById("searchInput").value || "");
+  showToast("Note restored.", "success");
+}
+
+function scheduleDeleteUndo(payload) {
+  if (deleteUndoState?.timerId) {
+    clearTimeout(deleteUndoState.timerId);
+  }
+
+  deleteUndoState = {
+    ...payload,
+    timerId: window.setTimeout(() => {
+      deleteUndoState = null;
+      hideToast();
+    }, 9000),
+  };
+}
+
+async function reanchorNote(index, anchorId) {
+  const note = currentNotes[index];
+  if (!note) return;
+
+  const updatedAnchor = await captureSelectionAnchorFromActiveTab();
+  if (!updatedAnchor?.exact) {
+    showToast("Select text on the page first, then try Re-anchor.", "error");
+    return;
+  }
+
+  const hostname = new URL(note.url).hostname;
+  const existingNotes = await chrome.storage.local.get(hostname);
+  const notes = existingNotes[hostname] || [];
+  const noteIndex = notes.findIndex(
+    (n) => n.url === note.url && n.createdAt === note.createdAt
+  );
+  if (noteIndex === -1) return;
+
+  const stored = notes[noteIndex];
+  if (anchorId === "legacy-primary") {
+    stored.anchor = updatedAnchor;
+  } else {
+    const links = Array.isArray(stored.linkedAnchors) ? [...stored.linkedAnchors] : [];
+    const linkIndex = resolveLinkedAnchorIndexById(links, anchorId);
+    if (linkIndex === -1) return;
+    links[linkIndex] = {
+      ...links[linkIndex],
+      anchor: updatedAnchor,
+      url: currentUrl,
+    };
+    stored.linkedAnchors = links;
+  }
+
+  notes[noteIndex] = {
+    ...stored,
+    modifiedAt: new Date().toISOString(),
+  };
+
+  await chrome.storage.local.set({ [hostname]: notes });
+  await loadNotes(document.getElementById("searchInput").value || "");
+  showToast("Anchor updated.", "success");
+}
+
+async function jumpToAnchor(index, anchorId) {
+  const note = currentNotes[index];
+  if (!note || !anchorId) return;
+  const entry = getAnchorsForPage(note, currentUrl).find((item) => item.id === anchorId);
+  if (!entry?.anchor?.exact) return;
+  const noteKey = getNoteId(note);
+
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (!tab?.id) return;
+
+    const result = await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      args: [entry.anchor, noteKey, anchorId],
+      func: (anchor, expectedNoteKey, expectedAnchorId) => {
+        const allAnchors = Array.from(document.querySelectorAll(".sitenotes-anchor"));
+        const exactAnchor = allAnchors.find(
+          (el) =>
+            el.dataset.noteKey === expectedNoteKey &&
+            el.dataset.anchorId === expectedAnchorId
+        );
+
+        if (exactAnchor) {
+          const rect = exactAnchor.getBoundingClientRect();
+          window.scrollTo({
+            top: Math.max(0, window.scrollY + rect.top - 140),
+            behavior: "smooth",
+          });
+          return true;
+        }
+
+        const text = anchor?.exact;
+        if (!text) return false;
+
+        const isEligible = (node) => {
+          if (!node || !node.nodeValue || !node.nodeValue.trim()) return false;
+          const parent = node.parentElement;
+          if (!parent) return false;
+          if (parent.closest("script, style, noscript, textarea, input, select")) return false;
+          return true;
+        };
+
+        const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+        let best = null;
+
+        while (walker.nextNode()) {
+          const node = walker.currentNode;
+          if (!isEligible(node)) continue;
+
+          const value = node.nodeValue;
+          const idx = value.indexOf(text);
+          if (idx === -1) continue;
+
+          const before = value.slice(Math.max(0, idx - 120), idx);
+          const after = value.slice(idx + text.length, idx + text.length + 120);
+          let score = 1;
+          if (anchor.prefix && before.endsWith(anchor.prefix)) score += 3;
+          if (anchor.suffix && after.startsWith(anchor.suffix)) score += 3;
+          if (!best || score > best.score) {
+            best = { node, idx, score };
+          }
+        }
+
+        if (!best) return false;
+
+        const range = document.createRange();
+        range.setStart(best.node, best.idx);
+        range.setEnd(best.node, best.idx + text.length);
+        const rect = range.getBoundingClientRect();
+        if (!rect) return false;
+
+        window.scrollTo({
+          top: Math.max(0, window.scrollY + rect.top - 140),
+          behavior: "smooth",
+        });
+        return true;
+      },
+    });
+
+    const found = Boolean(result?.[0]?.result);
+    if (!found) {
+      showToast("Could not locate this anchor in the current page.", "error");
+      return;
+    }
+    showToast("Scrolled to anchor.", "success");
+  } catch (error) {
+    showToast("Unable to jump to anchor on this page.", "error");
+  }
+}
+
+async function unlinkAnchor(index, anchorId) {
+  const note = currentNotes[index];
+  if (!note || !anchorId) return;
+
+  const hostname = new URL(note.url).hostname;
+  const existingNotes = await chrome.storage.local.get(hostname);
+  const notes = existingNotes[hostname] || [];
+  const noteIndex = notes.findIndex(
+    (n) => n.url === note.url && n.createdAt === note.createdAt
+  );
+  if (noteIndex === -1) return;
+
+  const stored = { ...notes[noteIndex] };
+  if (anchorId === "legacy-primary") {
+    if (!stored.anchor?.exact) return;
+    stored.anchor = null;
+  } else {
+    const links = Array.isArray(stored.linkedAnchors) ? [...stored.linkedAnchors] : [];
+    const removeIndex = resolveLinkedAnchorIndexById(links, anchorId);
+    if (removeIndex === -1) return;
+    links.splice(removeIndex, 1);
+    stored.linkedAnchors = links;
+  }
+
+  notes[noteIndex] = {
+    ...stored,
+    modifiedAt: new Date().toISOString(),
+  };
+
+  await chrome.storage.local.set({ [hostname]: notes });
+  await loadNotes(document.getElementById("searchInput").value || "");
+  showToast("Anchor unlinked.", "success");
+}
+
+async function unlinkPageLevelLink(index) {
+  const note = currentNotes[index];
+  if (!note) return;
+
+  const hostname = new URL(note.url).hostname;
+  const existingNotes = await chrome.storage.local.get(hostname);
+  const notes = existingNotes[hostname] || [];
+  const noteIndex = notes.findIndex(
+    (n) => n.url === note.url && n.createdAt === note.createdAt
+  );
+  if (noteIndex === -1) return;
+
+  const stored = { ...notes[noteIndex] };
+  const links = Array.isArray(stored.linkedAnchors) ? [...stored.linkedAnchors] : [];
+  const removeIndex = links.findIndex(
+    (entry) => entry?.url === currentUrl && !entry?.anchor?.exact
+  );
+  if (removeIndex === -1) {
+    showToast("No page-level link found for this page.", "warning");
+    return;
+  }
+
+  links.splice(removeIndex, 1);
+  stored.linkedAnchors = links;
+  notes[noteIndex] = {
+    ...stored,
+    modifiedAt: new Date().toISOString(),
+  };
+
+  await chrome.storage.local.set({ [hostname]: notes });
+  await loadNotes(document.getElementById("searchInput").value || "");
+  showToast("Page-level link removed.", "success");
 }
 
 async function attachExistingNote(index) {
@@ -614,12 +900,13 @@ function openAttachNoteModal() {
   const modal = document.getElementById("attachNoteModal");
   const text = document.getElementById("attachNoteModalText");
   const selectionBtn = document.getElementById("attachToSelectionBtn");
+  const pageBtn = document.getElementById("attachAsPageBtn");
 
   const hasSelection = Boolean(pendingAttachContext?.selectionAnchor?.exact);
   if (text) {
     text.textContent = hasSelection
-      ? "A text selection is available. Choose where to attach this note."
-      : "No text selection detected. You can attach this note to the current page.";
+      ? "A text selection is available. Attach this note to page or selected text."
+      : "No text selection detected. You can still attach this note to the page.";
   }
 
   if (selectionBtn) {
@@ -627,6 +914,11 @@ function openAttachNoteModal() {
     selectionBtn.title = hasSelection
       ? "Attach to selected text"
       : "Select text on the page first";
+  }
+
+  if (pageBtn) {
+    pageBtn.disabled = false;
+    pageBtn.title = "Attach as page-level link";
   }
 
   modal?.classList.add("active");
@@ -644,31 +936,82 @@ async function completeAttachExistingNote(mode) {
   }
 
   const { source, selectionAnchor } = pendingAttachContext;
-  const anchor =
-    mode === "selection" && selectionAnchor?.exact ? selectionAnchor : null;
+  if (mode === "selection" && !selectionAnchor?.exact) {
+    showToast("Select text on the page first, then attach to selection.", "error");
+    return;
+  }
 
-  const attachedNote = {
-    content: source.content,
-    tags: Array.isArray(source.tags) ? [...source.tags] : [],
-    anchor,
-    url: currentUrl,
-    createdAt: new Date().toISOString(),
+  const hostname = new URL(source.url).hostname;
+  const existingNotes = await chrome.storage.local.get(hostname);
+  const notes = existingNotes[hostname] || [];
+  const noteIndex = notes.findIndex(
+    (n) => n.url === source.url && n.createdAt === source.createdAt
+  );
+  if (noteIndex === -1) {
+    showToast("Could not locate source note to link.", "error");
+    return;
+  }
+
+  const stored = notes[noteIndex];
+  const links = Array.isArray(stored.linkedAnchors) ? [...stored.linkedAnchors] : [];
+  if (mode === "page") {
+    const alreadyPageLinked = stored.url === currentUrl || links.some(
+      (entry) => entry?.url === currentUrl && !entry?.anchor?.exact
+    );
+    if (alreadyPageLinked) {
+      showToast("This note is already linked to the current page.", "warning");
+      closeAttachNoteModal();
+      return;
+    }
+
+    links.push({
+      id: createAnchorLinkId(),
+      url: currentUrl,
+      anchor: null,
+      createdAt: new Date().toISOString(),
+      linkType: "page",
+    });
+  }
+
+  if (mode === "selection") {
+    const duplicate = links.some(
+      (entry) =>
+        entry?.url === currentUrl &&
+        entry?.anchor?.exact === selectionAnchor.exact &&
+        entry?.anchor?.prefix === selectionAnchor.prefix &&
+        entry?.anchor?.suffix === selectionAnchor.suffix
+    );
+
+    if (duplicate) {
+      showToast("This selected text is already linked to the note.", "warning");
+      closeAttachNoteModal();
+      return;
+    }
+
+    links.push({
+      id: createAnchorLinkId(),
+      url: currentUrl,
+      anchor: selectionAnchor,
+      createdAt: new Date().toISOString(),
+    });
+  }
+
+  notes[noteIndex] = {
+    ...stored,
+    linkedAnchors: links,
     modifiedAt: new Date().toISOString(),
-    attachedFrom: {
-      url: source.url,
-      createdAt: source.createdAt,
-    },
   };
 
-  const existingNotes = (await chrome.storage.local.get(currentHostname)) || {};
-  const notes = existingNotes[currentHostname] || [];
-  notes.push(attachedNote);
-
-  await chrome.storage.local.set({ [currentHostname]: notes });
-  await ensureTagsInCatalog(attachedNote.tags);
+  await chrome.storage.local.set({ [hostname]: notes });
   await refreshTagCatalog();
   await loadNotes(document.getElementById("searchInput").value || "");
   closeAttachNoteModal();
+  showToast(
+    mode === "page"
+      ? "Page link added to existing note."
+      : "Anchor link added to existing note.",
+    "success"
+  );
 }
 
 // Utility functions
@@ -687,6 +1030,7 @@ function resetAllData() {
       availableTags = [];
       await loadNotes();
       closeSettingsModal();
+      showToast("All data has been reset.", "success");
     });
   }
 }
@@ -702,6 +1046,7 @@ function exportData() {
     a.download = "sitenotes_backup.json";
     a.click();
     URL.revokeObjectURL(url);
+    showToast("Backup exported.", "success");
   });
 }
 
@@ -718,10 +1063,11 @@ function importData(e) {
           await refreshTagCatalog();
           await loadNotes();
           closeSettingsModal();
+          showToast("Backup imported.", "success");
         });
       });
     } catch (error) {
-      alert("Invalid backup file");
+      showToast("Invalid backup file.", "error");
     }
   };
   reader.readAsText(file);
@@ -752,12 +1098,98 @@ function getNoteId(note) {
   return `${note.url}::${note.createdAt}`;
 }
 
+function createAnchorLinkId() {
+  return `a_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function noteUrlHasHostname(url, hostname) {
+  try {
+    return new URL(url).hostname === hostname;
+  } catch {
+    return false;
+  }
+}
+
+function getLinkedPageUrls(note) {
+  if (!Array.isArray(note?.linkedAnchors)) return [];
+  return note.linkedAnchors
+    .map((entry) => entry?.url)
+    .filter((url) => typeof url === "string" && url.length > 0);
+}
+
+function noteAppliesToPage(note, pageUrl) {
+  if (note.url === pageUrl) return true;
+  return getLinkedPageUrls(note).includes(pageUrl);
+}
+
+function getAnchorsForPage(note, pageUrl) {
+  const results = [];
+
+  if (
+    note.url === pageUrl &&
+    note.anchor?.type === "text-quote" &&
+    typeof note.anchor?.exact === "string" &&
+    note.anchor.exact.length > 0
+  ) {
+    results.push({ id: "legacy-primary", anchor: note.anchor, url: note.url });
+  }
+
+  if (Array.isArray(note.linkedAnchors)) {
+    note.linkedAnchors.forEach((entry, linkIndex) => {
+      if (!entry || entry.url !== pageUrl) return;
+      if (
+        entry.anchor?.type !== "text-quote" ||
+        typeof entry.anchor?.exact !== "string" ||
+        !entry.anchor.exact
+      ) {
+        return;
+      }
+      const id = entry.id || `idx-${linkIndex}`;
+      results.push({ id, anchor: entry.anchor, url: entry.url });
+    });
+  }
+
+  return results;
+}
+
+function hasPageLevelLinkForUrl(note, pageUrl) {
+  if (!Array.isArray(note?.linkedAnchors)) return false;
+  return note.linkedAnchors.some(
+    (entry) => entry?.url === pageUrl && !entry?.anchor?.exact
+  );
+}
+
+function resolveLinkedAnchorIndexById(links, anchorId) {
+  const exact = links.findIndex((entry) => entry?.id === anchorId);
+  if (exact !== -1) return exact;
+
+  if (anchorId.startsWith("idx-")) {
+    const idx = Number(anchorId.slice(4));
+    if (Number.isInteger(idx) && idx >= 0 && idx < links.length) {
+      return idx;
+    }
+  }
+
+  return -1;
+}
+
+function getAnchorStateKey(note, anchorId) {
+  return `${getNoteId(note)}::${anchorId}`;
+}
+
+function getAnchorState(note, anchorId) {
+  return anchorStateByNoteId[getAnchorStateKey(note, anchorId)]?.status || "unknown";
+}
+
 function trimToLength(text, maxLength) {
   if (!text) return "";
   return text.length > maxLength ? `${text.slice(0, maxLength - 1)}...` : text;
 }
 
 function escapeHtml(text) {
+  if (typeof MARKDOWN.escapeHtml === "function") {
+    return MARKDOWN.escapeHtml(text);
+  }
   return String(text)
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
@@ -767,6 +1199,9 @@ function escapeHtml(text) {
 }
 
 function sanitizeUrl(url) {
+  if (typeof MARKDOWN.sanitizeUrl === "function") {
+    return MARKDOWN.sanitizeUrl(url);
+  }
   const trimmed = String(url || "").trim();
   if (!trimmed) return "#";
   if (/^(https?:|mailto:)/i.test(trimmed)) return trimmed;
@@ -775,37 +1210,17 @@ function sanitizeUrl(url) {
 }
 
 function renderInlineMarkdown(text) {
-  let html = escapeHtml(text || "");
-
-  // Markdown links: [label](https://example.com)
-  html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_, label, url) => {
-    const safe = sanitizeUrl(url);
-    if (safe === "#") return label;
-    return `<a href="${safe}" target="_blank" rel="noopener noreferrer">${label}</a>`;
-  });
-
-  // Auto-link plain URLs
-  html = html.replace(/(^|\s)(https?:\/\/[^\s<]+)/g, (m, prefix, url) => {
-    const safe = sanitizeUrl(url);
-    return `${prefix}<a href="${safe}" target="_blank" rel="noopener noreferrer">${url}</a>`;
-  });
-
-  // Basic emphasis
-  html = html.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
-  html = html.replace(/\*([^*]+)\*/g, "<em>$1</em>");
-  html = html.replace(/`([^`]+)`/g, "<code>$1</code>");
-
-  return html;
+  if (typeof MARKDOWN.renderInlineMarkdown === "function") {
+    return MARKDOWN.renderInlineMarkdown(text);
+  }
+  return escapeHtml(text || "");
 }
 
 function renderBasicMarkdown(text) {
-  const normalized = String(text || "").replace(/\r\n/g, "\n");
-  if (!normalized.trim()) return "";
-
-  return normalized
-    .split(/\n{2,}/)
-    .map((block) => `<p>${renderInlineMarkdown(block).replace(/\n/g, "<br>")}</p>`)
-    .join("");
+  if (typeof MARKDOWN.renderBasicMarkdown === "function") {
+    return MARKDOWN.renderBasicMarkdown(text);
+  }
+  return renderInlineMarkdown(text || "");
 }
 
 function renderSelectionAnchorHint() {
@@ -865,8 +1280,8 @@ async function captureSelectionAnchorFromActiveTab() {
 
 async function refreshAnchorStates(notes) {
   anchorStateByNoteId = {};
-  const candidates = notes.filter(
-    (note) => note.url === currentUrl && note.anchor?.type === "text-quote" && note.anchor?.exact
+  const candidates = notes.flatMap((note) =>
+    getAnchorsForPage(note, currentUrl).map((entry) => ({ note, entry }))
   );
 
   if (!candidates.length) return;
@@ -875,7 +1290,7 @@ async function refreshAnchorStates(notes) {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
     if (!tab?.id) return;
 
-    const texts = candidates.map((note) => note.anchor.exact);
+    const texts = candidates.map((item) => item.entry.anchor.exact);
     const results = await chrome.scripting.executeScript({
       target: { tabId: tab.id },
       args: [texts],
@@ -888,12 +1303,16 @@ async function refreshAnchorStates(notes) {
     });
 
     const states = results?.[0]?.result || [];
-    candidates.forEach((note, idx) => {
-      anchorStateByNoteId[getNoteId(note)] = { status: states[idx] || "unknown" };
+    candidates.forEach((item, idx) => {
+      anchorStateByNoteId[getAnchorStateKey(item.note, item.entry.id)] = {
+        status: states[idx] || "unknown",
+      };
     });
   } catch (error) {
-    candidates.forEach((note) => {
-      anchorStateByNoteId[getNoteId(note)] = { status: "unknown" };
+    candidates.forEach((item) => {
+      anchorStateByNoteId[getAnchorStateKey(item.note, item.entry.id)] = {
+        status: "unknown",
+      };
     });
   }
 }
@@ -904,67 +1323,76 @@ function handleTagInput(e) {
     const tag = normalizeTag(e.target.value);
     if (!tag) return;
 
-    const existingTags = getTagsFromEditor(e.target.parentElement);
-    if (existingTags.includes(tag)) {
-      e.target.value = "";
-      return;
-    }
-
-    insertTagChip(e.target.parentElement, tag, e.target);
+    addTagChip(e.target.parentElement, tag);
     e.target.value = "";
-    syncTagPickerSelectionForContainer(e.target.parentElement);
   }
 }
 
-function insertTagChip(container, tag, beforeElement) {
-  const tagElement = document.createElement("span");
-  tagElement.className = "tag";
-  tagElement.innerHTML = `#${tag}<button type="button">&times;</button>`;
+function collectTagsForSave(tagsEditor) {
+  const pendingInput = tagsEditor?.querySelector("input")?.value || "";
+  const pendingTag = normalizeTag(pendingInput);
 
-  const deleteBtn = tagElement.querySelector("button");
-  deleteBtn.addEventListener("click", function () {
-    tagElement.remove();
-    syncTagPickerSelectionForContainer(container);
-  });
+  if (pendingTag) {
+    addTagChip(tagsEditor, pendingTag);
+  }
 
-  container.insertBefore(tagElement, beforeElement || container.querySelector("input"));
+  return getTagsFromEditor(tagsEditor);
 }
 
 function getTagsFromEditor(tagsEditor) {
   if (!tagsEditor) return [];
-  return Array.from(tagsEditor.querySelectorAll(".tag"))
-    .map((tagElement) =>
-      normalizeTag(
-        tagElement.textContent.replace(/^#/, "").replace("×", "").trim()
-      )
-    )
-    .filter(Boolean);
+  return Array.from(tagsEditor.querySelectorAll(".tag-chip"))
+    .map((chip) => normalizeTag(chip.dataset.tag || ""))
+    .filter(Boolean)
+    .sort((a, b) => a.localeCompare(b));
 }
 
-function collectTagsForSave(tagsEditor, tagsPicker) {
-  const chipTags = getTagsFromEditor(tagsEditor);
-  const pendingInput = tagsEditor?.querySelector("input")?.value || "";
-  const pendingTag = normalizeTag(pendingInput);
+function addTagChip(tagsEditor, tag) {
+  if (!tagsEditor || !tag) return;
+  const normalizedTag = normalizeTag(tag);
+  if (!normalizedTag) return;
 
-  const activePickerTags = Array.from(
-    tagsPicker?.querySelectorAll(".available-tag-btn.active") || []
-  )
-    .map((button) => normalizeTag(button.dataset.tag || ""))
-    .filter(Boolean);
+  if (getTagsFromEditor(tagsEditor).includes(normalizedTag)) {
+    return;
+  }
 
-  return Array.from(
-    new Set([...chipTags, ...activePickerTags, pendingTag].filter(Boolean))
-  );
-}
+  const input = tagsEditor.querySelector("input");
+  const chip = document.createElement("span");
+  chip.className = "tag tag-chip";
+  chip.dataset.tag = normalizedTag;
 
-function attachTagDeleteHandlers(tagsEditor) {
-  if (!tagsEditor) return;
-  tagsEditor.querySelectorAll(".tag button").forEach((button) => {
-    button.addEventListener("click", () => {
-      button.parentElement.remove();
-      syncTagPickerSelectionForContainer(tagsEditor);
-    });
+  const label = document.createElement("span");
+  label.textContent = `#${normalizedTag}`;
+
+  const removeBtn = document.createElement("button");
+  removeBtn.type = "button";
+  removeBtn.innerHTML = "&times;";
+  removeBtn.addEventListener("click", () => {
+    chip.remove();
   });
+
+  chip.appendChild(label);
+  chip.appendChild(removeBtn);
+
+  if (input) {
+    tagsEditor.insertBefore(chip, input);
+  } else {
+    tagsEditor.appendChild(chip);
+  }
+}
+
+function renderTagEditor(tagsEditor, tags) {
+  if (!tagsEditor) return;
+  tagsEditor.innerHTML =
+    '<input type="text" placeholder="Add tags (press Enter)" style="border: none; outline: none; flex: 1;">';
+
+  bindTagInputListener(tagsEditor.querySelector("input"));
+
+  (tags || [])
+    .map((tag) => normalizeTag(tag))
+    .filter(Boolean)
+    .sort((a, b) => a.localeCompare(b))
+    .forEach((tag) => addTagChip(tagsEditor, tag));
 }
 
 function areTagArraysEqual(a, b) {
@@ -997,62 +1425,6 @@ async function ensureTagsInCatalog(tags) {
   );
   availableTags = merged;
   await chrome.storage.local.set({ [TAGS_STORAGE_KEY]: merged });
-}
-
-function renderNewNoteTagPicker() {
-  const picker = document.getElementById("noteTagPicker");
-  const editor = document.getElementById("tagsInput");
-  buildTagPicker(picker, editor);
-}
-
-function buildTagPicker(pickerContainer, editorContainer) {
-  if (!pickerContainer || !editorContainer) return;
-
-  if (!availableTags.length) {
-    pickerContainer.innerHTML = "";
-    return;
-  }
-
-  const selected = new Set(getTagsFromEditor(editorContainer));
-  pickerContainer.innerHTML = availableTags
-    .map((tag) => {
-      const activeClass = selected.has(tag) ? "active" : "";
-      return `<button type="button" class="available-tag-btn ${activeClass}" data-tag="${tag}">#${tag}</button>`;
-    })
-    .join("");
-
-  pickerContainer.querySelectorAll(".available-tag-btn").forEach((button) => {
-    button.addEventListener("click", () => {
-      const tag = button.dataset.tag;
-      const input = editorContainer.querySelector("input");
-      const editorTags = getTagsFromEditor(editorContainer);
-
-      if (editorTags.includes(tag)) {
-        const chip = Array.from(editorContainer.querySelectorAll(".tag")).find(
-          (el) => normalizeTag(el.textContent.replace(/^#/, "").replace("×", "").trim()) === tag
-        );
-        if (chip) chip.remove();
-      } else {
-        insertTagChip(editorContainer, tag, input);
-      }
-
-      syncTagPickerSelectionForContainer(editorContainer);
-    });
-  });
-}
-
-function syncTagPickerSelectionForContainer(editorContainer) {
-  const noteModalEditor = document.getElementById("tagsInput");
-  if (editorContainer === noteModalEditor) {
-    renderNewNoteTagPicker();
-    return;
-  }
-
-  const noteCard = editorContainer.closest(".note-card");
-  if (!noteCard) return;
-  const picker = noteCard.querySelector('[data-role="tags-picker"]');
-  if (!picker) return;
-  buildTagPicker(picker, editorContainer);
 }
 
 function getTagDisplayRows(tags) {
@@ -1146,8 +1518,9 @@ async function createTagFromManager() {
   await ensureTagsInCatalog([fullTag]);
   document.getElementById("newTagNameInput").value = "";
   renderTagsManager();
-  renderNewNoteTagPicker();
-  loadNotes();
+  renderTagEditor(document.getElementById("tagsInput"), []);
+  await loadNotes();
+  showToast(`Tag '#${fullTag}' created.`, "success");
 }
 
 async function renameTagEverywhere(oldTag, newTag) {
@@ -1156,6 +1529,7 @@ async function renameTagEverywhere(oldTag, newTag) {
     if (tag.startsWith(`${oldTag}/`)) return `${newTag}${tag.slice(oldTag.length)}`;
     return tag;
   });
+  showToast(`Tag '#${oldTag}' renamed to '#${newTag}'.`, "success");
 }
 
 async function deleteTagEverywhere(targetTag) {
@@ -1163,6 +1537,51 @@ async function deleteTagEverywhere(targetTag) {
     if (tag === targetTag || tag.startsWith(`${targetTag}/`)) return null;
     return tag;
   });
+  showToast(`Tag '#${targetTag}' deleted.`, "success");
+}
+
+function showToast(message, type = "success", action = null, durationMs = 3500) {
+  const toast = document.getElementById("toast");
+  const toastMessage = document.getElementById("toastMessage");
+  const toastAction = document.getElementById("toastActionBtn");
+
+  if (!toast || !toastMessage) return;
+
+  if (window.__siteNotesToastTimeout) {
+    clearTimeout(window.__siteNotesToastTimeout);
+  }
+
+  toast.classList.remove("success", "warning", "error");
+  toast.classList.add(type, "visible");
+  toastMessage.textContent = message;
+
+  if (toastAction) {
+    if (action?.label && typeof action?.onClick === "function") {
+      toastAction.style.display = "inline-flex";
+      toastAction.textContent = action.label;
+      toastAction.onclick = () => {
+        action.onClick();
+      };
+    } else {
+      toastAction.style.display = "none";
+      toastAction.onclick = null;
+    }
+  }
+
+  window.__siteNotesToastTimeout = window.setTimeout(() => {
+    hideToast();
+  }, durationMs);
+}
+
+function hideToast() {
+  const toast = document.getElementById("toast");
+  const toastAction = document.getElementById("toastActionBtn");
+  if (!toast) return;
+  toast.classList.remove("visible");
+  if (toastAction) {
+    toastAction.style.display = "none";
+    toastAction.onclick = null;
+  }
 }
 
 async function rewriteTagsEverywhere(mapTagFn) {
@@ -1219,7 +1638,7 @@ async function rewriteTagsEverywhere(mapTagFn) {
 
   await refreshTagCatalog();
   renderTagsManager();
-  renderNewNoteTagPicker();
+  renderTagEditor(document.getElementById("tagsInput"), []);
   loadNotes();
 }
 

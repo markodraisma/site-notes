@@ -2,6 +2,7 @@
   const ANCHOR_CLASS = "sitenotes-anchor";
   const TOOLTIP_ID = "sitenotes-anchor-tooltip";
   const STYLE_ID = "sitenotes-anchor-style";
+  const MARKDOWN = globalThis.SiteNotesMarkdown || {};
 
   function isYouTubeVideo(url) {
     return (
@@ -72,6 +73,41 @@
         margin-bottom: 0;
       }
 
+      #${TOOLTIP_ID} h1,
+      #${TOOLTIP_ID} h2,
+      #${TOOLTIP_ID} h3,
+      #${TOOLTIP_ID} h4,
+      #${TOOLTIP_ID} h5,
+      #${TOOLTIP_ID} h6 {
+        margin: 0 0 6px;
+        line-height: 1.25;
+      }
+
+      #${TOOLTIP_ID} h1 {
+        font-size: 13px;
+      }
+
+      #${TOOLTIP_ID} h2,
+      #${TOOLTIP_ID} h3,
+      #${TOOLTIP_ID} h4,
+      #${TOOLTIP_ID} h5,
+      #${TOOLTIP_ID} h6 {
+        font-size: 12px;
+      }
+
+      #${TOOLTIP_ID} ul {
+        margin: 0 0 6px 16px;
+        padding: 0;
+      }
+
+      #${TOOLTIP_ID} li {
+        margin: 0 0 3px;
+      }
+
+      #${TOOLTIP_ID} li:last-child {
+        margin-bottom: 0;
+      }
+
       #${TOOLTIP_ID} a {
         color: #93c5fd;
         text-decoration: underline;
@@ -105,7 +141,6 @@
     tooltip.id = TOOLTIP_ID;
     document.documentElement.appendChild(tooltip);
 
-    // Keep tooltip visible while hovered so links can be clicked.
     tooltip.addEventListener("mouseenter", () => {
       if (window.__siteNotesHideTooltipTimeout) {
         clearTimeout(window.__siteNotesHideTooltipTimeout);
@@ -191,7 +226,7 @@
     return best;
   }
 
-  function wrapTextRange(node, start, length, tooltipHtml, firstLink) {
+  function wrapTextRange(node, start, length, tooltipHtml, firstLink, noteKey, anchorId) {
     try {
       const fullText = node.nodeValue || "";
       const beforeText = fullText.slice(0, start);
@@ -205,6 +240,8 @@
       const wrapper = document.createElement("span");
       wrapper.className = ANCHOR_CLASS;
       wrapper.dataset.noteTooltipHtml = tooltipHtml;
+      wrapper.dataset.noteKey = noteKey || "";
+      wrapper.dataset.anchorId = anchorId || "";
       if (firstLink) {
         wrapper.classList.add("has-link");
         wrapper.dataset.noteFirstLink = firstLink;
@@ -250,7 +287,6 @@
         const firstLink = el.dataset.noteFirstLink;
         if (!firstLink) return;
 
-        // If the underlying page text is already part of a native link, don't intercept.
         if (el.closest("a")) return;
 
         event.preventDefault();
@@ -261,11 +297,17 @@
   }
 
   function trimToLength(text, maxLength) {
+    if (typeof MARKDOWN.trimToLength === "function") {
+      return MARKDOWN.trimToLength(text, maxLength);
+    }
     if (!text) return "";
     return text.length > maxLength ? `${text.slice(0, maxLength - 1)}...` : text;
   }
 
   function escapeHtml(text) {
+    if (typeof MARKDOWN.escapeHtml === "function") {
+      return MARKDOWN.escapeHtml(text);
+    }
     return String(text || "")
       .replace(/&/g, "&amp;")
       .replace(/</g, "&lt;")
@@ -274,66 +316,18 @@
       .replace(/'/g, "&#39;");
   }
 
-  function sanitizeUrl(url) {
-    const trimmed = String(url || "").trim();
-    if (!trimmed) return "#";
-    if (/^(https?:|mailto:)/i.test(trimmed)) return trimmed;
-    if (/^www\./i.test(trimmed)) return `https://${trimmed}`;
-    return "#";
-  }
-
   function extractFirstLinkFromMarkdown(content) {
-    const text = String(content || "");
-
-    const mdMatch = text.match(/\[[^\]]+\]\(([^)]+)\)/);
-    if (mdMatch && mdMatch[1]) {
-      const safe = sanitizeUrl(mdMatch[1]);
-      if (safe !== "#") return safe;
+    if (typeof MARKDOWN.extractFirstLinkFromMarkdown === "function") {
+      return MARKDOWN.extractFirstLinkFromMarkdown(content);
     }
-
-    const plainMatch = text.match(/https?:\/\/[^\s)]+/);
-    if (plainMatch && plainMatch[0]) {
-      const safe = sanitizeUrl(plainMatch[0]);
-      if (safe !== "#") return safe;
-    }
-
-    const wwwMatch = text.match(/\bwww\.[^\s)]+/i);
-    if (wwwMatch && wwwMatch[0]) {
-      const safe = sanitizeUrl(wwwMatch[0]);
-      if (safe !== "#") return safe;
-    }
-
     return "";
   }
 
-  function renderInlineMarkdown(text) {
-    let html = escapeHtml(text || "");
-
-    html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_, label, url) => {
-      const safe = sanitizeUrl(url);
-      if (safe === "#") return label;
-      return `<a href="${safe}" target="_blank" rel="noopener noreferrer">${label}</a>`;
-    });
-
-    html = html.replace(/(^|\s)(https?:\/\/[^\s<]+)/g, (m, prefix, url) => {
-      const safe = sanitizeUrl(url);
-      return `${prefix}<a href="${safe}" target="_blank" rel="noopener noreferrer">${url}</a>`;
-    });
-
-    html = html.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
-    html = html.replace(/\*([^*]+)\*/g, "<em>$1</em>");
-    html = html.replace(/`([^`]+)`/g, "<code>$1</code>");
-    return html;
-  }
-
   function renderBasicMarkdown(text) {
-    const normalized = String(text || "").replace(/\r\n/g, "\n");
-    if (!normalized.trim()) return "";
-
-    return normalized
-      .split(/\n{2,}/)
-      .map((block) => `<p>${renderInlineMarkdown(block).replace(/\n/g, "<br>")}</p>`)
-      .join("");
+    if (typeof MARKDOWN.renderBasicMarkdown === "function") {
+      return MARKDOWN.renderBasicMarkdown(text);
+    }
+    return escapeHtml(text || "");
   }
 
   function buildTooltipHtml(note) {
@@ -348,6 +342,39 @@
     return `${renderedPreview}${tagsHtml}`;
   }
 
+  function getAnchorsForUrl(note, url) {
+    const results = [];
+
+    if (
+      note.url === url &&
+      note.anchor?.type === "text-quote" &&
+      typeof note.anchor?.exact === "string" &&
+      note.anchor.exact.length > 0
+    ) {
+      results.push({ anchor: note.anchor, anchorId: "legacy-primary" });
+    }
+
+    if (Array.isArray(note.linkedAnchors)) {
+      note.linkedAnchors.forEach((entry, idx) => {
+        if (!entry || entry.url !== url) return;
+        if (
+          entry.anchor?.type !== "text-quote" ||
+          typeof entry.anchor?.exact !== "string" ||
+          !entry.anchor.exact
+        ) {
+          return;
+        }
+        results.push({ anchor: entry.anchor, anchorId: entry.id || `idx-${idx}` });
+      });
+    }
+
+    return results;
+  }
+
+  function getNoteKey(note) {
+    return `${note.url}::${note.createdAt}`;
+  }
+
   async function loadAnchoredNotesForPage() {
     const normalizedUrl = getNormalizedPageUrl();
     const data = await chrome.storage.local.get(null);
@@ -355,16 +382,16 @@
     return Object.entries(data)
       .filter(([key, value]) => key !== "__siteNotesTags__" && Array.isArray(value))
       .flatMap(([, notes]) => notes)
-      .filter(
-        (note) =>
-          note &&
-          note.url === normalizedUrl &&
-          note.anchor &&
-          note.anchor.type === "text-quote" &&
-          typeof note.anchor.exact === "string" &&
-          note.anchor.exact.length > 0
-      )
-      .sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));
+      .flatMap((note) => {
+        if (!note) return [];
+        return getAnchorsForUrl(note, normalizedUrl).map((entry) => ({
+          note,
+          anchor: entry.anchor,
+          anchorId: entry.anchorId,
+          noteKey: getNoteKey(note),
+        }));
+      })
+      .sort((a, b) => new Date(a.note.createdAt) - new Date(b.note.createdAt));
   }
 
   async function renderAnchors() {
@@ -376,16 +403,18 @@
     const anchoredNotes = await loadAnchoredNotesForPage();
     if (!anchoredNotes.length) return;
 
-    anchoredNotes.forEach((note) => {
-      const match = getBestTextMatch(document.body, note.anchor);
+    anchoredNotes.forEach((item) => {
+      const match = getBestTextMatch(document.body, item.anchor);
       if (!match) return;
 
       wrapTextRange(
         match.node,
         match.index,
-        note.anchor.exact.length,
-        buildTooltipHtml(note),
-        extractFirstLinkFromMarkdown(note.content)
+        item.anchor.exact.length,
+        buildTooltipHtml(item.note),
+        extractFirstLinkFromMarkdown(item.note.content),
+        item.noteKey,
+        item.anchorId
       );
     });
 
@@ -393,7 +422,6 @@
   }
 
   function scheduleRender() {
-    // Wait a tick to allow dynamic page text to settle after navigation/updates.
     window.setTimeout(() => {
       renderAnchors();
     }, 250);
@@ -404,10 +432,8 @@
 
   chrome.storage.onChanged.addListener((changes, areaName) => {
     if (areaName !== "local") return;
-    // Re-render for any local notes/tag update since anchors may have changed.
     if (changes) scheduleRender();
   });
 
-  // Initial render for already-loaded documents.
   scheduleRender();
 })();
