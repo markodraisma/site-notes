@@ -197,11 +197,21 @@
   function normalizeAnchor(anchor) {
     if (!anchor || typeof anchor !== "object") return null;
     if (!anchor.exact || typeof anchor.exact !== "string") return null;
+
+    const path = Array.isArray(anchor.textNodePath)
+      ? anchor.textNodePath.filter((idx) => Number.isInteger(idx) && idx >= 0)
+      : null;
+    const startOffset = Number.isInteger(anchor.startOffset) ? anchor.startOffset : null;
+    const endOffset = Number.isInteger(anchor.endOffset) ? anchor.endOffset : null;
+
     return {
       type: anchor.type || "text-quote",
       exact: anchor.exact,
       prefix: typeof anchor.prefix === "string" ? anchor.prefix : "",
       suffix: typeof anchor.suffix === "string" ? anchor.suffix : "",
+      textNodePath: path && path.length ? path : undefined,
+      startOffset: startOffset !== null ? startOffset : undefined,
+      endOffset: endOffset !== null ? endOffset : undefined,
       capturedAt: anchor.capturedAt || new Date().toISOString(),
     };
   }

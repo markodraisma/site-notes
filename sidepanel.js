@@ -17,7 +17,202 @@ const TAGS_STORAGE_KEY = "__siteNotesTags__";
 function bindTagInputListener(input) {
   if (!input || input.dataset.tagInputBound === "1") return;
   input.addEventListener("keydown", handleTagInput);
+  input.addEventListener("input", handleTagInputValueChange);
+  input.addEventListener("focus", handleTagInputFocus);
+  input.addEventListener("blur", handleTagInputBlur);
   input.dataset.tagInputBound = "1";
+}
+
+function getTagEditorFromInput(input) {
+  if (!(input instanceof HTMLElement)) return null;
+  const editor = input.closest(".tags-input");
+  return editor instanceof HTMLElement ? editor : null;
+}
+
+function ensureTagSuggestionsDropdown(tagsEditor) {
+  if (!tagsEditor) return null;
+  let dropdown = tagsEditor.querySelector(".tag-suggestions");
+  if (!dropdown) {
+    dropdown = document.createElement("div");
+    dropdown.className = "tag-suggestions";
+    dropdown.style.display = "none";
+    tagsEditor.appendChild(dropdown);
+  }
+  return dropdown;
+}
+
+function getSelectedTagSet(tagsEditor) {
+  return new Set(getTagsFromEditor(tagsEditor));
+}
+
+function buildTagSuggestions(tagsEditor, query) {
+  const selected = getSelectedTagSet(tagsEditor);
+  const normalizedQuery = normalizeTag(query || "").toLowerCase();
+
+  const matches = availableTags
+    .filter((tag) => !selected.has(tag))
+    .filter((tag) => {
+      if (!normalizedQuery) return true;
+      return tag.toLowerCase().includes(normalizedQuery);
+    })
+    .slice(0, 8);
+
+  const normalizedNewTag = normalizeTag(query || "");
+  const showCreateOption =
+    Boolean(normalizedNewTag) &&
+    !selected.has(normalizedNewTag) &&
+    !availableTags.includes(normalizedNewTag);
+
+  return {
+    matches,
+    showCreateOption,
+    normalizedNewTag,
+  };
+}
+
+function setTagSuggestionActiveState(dropdown, activeIndex) {
+  if (!dropdown) return;
+  const options = Array.from(dropdown.querySelectorAll(".tag-suggestion-item"));
+  options.forEach((option, idx) => {
+    if (idx === activeIndex) {
+      option.classList.add("active");
+    } else {
+      option.classList.remove("active");
+    }
+  });
+  dropdown.dataset.activeIndex = String(activeIndex);
+}
+
+function showTagSuggestions(tagsEditor) {
+  const input = tagsEditor?.querySelector("input");
+  if (!input) return;
+
+  const dropdown = ensureTagSuggestionsDropdown(tagsEditor);
+  if (!dropdown) return;
+
+  const { matches, showCreateOption, normalizedNewTag } = buildTagSuggestions(
+    tagsEditor,
+    input.value
+  );
+
+  if (!matches.length && !showCreateOption) {
+    dropdown.style.display = "none";
+    dropdown.innerHTML = "";
+    dropdown.dataset.activeIndex = "-1";
+    return;
+  }
+
+  const items = [
+    ...matches.map(
+      (tag) =>
+        `<button type="button" class="tag-suggestion-item" data-value="${escapeHtml(tag)}">#${escapeHtml(
+          tag
+        )}</button>`
+    ),
+  ];
+
+  if (showCreateOption) {
+    items.push(
+      `<button type="button" class="tag-suggestion-item create" data-value="${escapeHtml(
+        normalizedNewTag
+      )}">Create #${escapeHtml(normalizedNewTag)}</button>`
+    );
+  }
+
+  dropdown.innerHTML = items.join("");
+  dropdown.style.display = "block";
+  setTagSuggestionActiveState(dropdown, 0);
+
+  dropdown.querySelectorAll(".tag-suggestion-item").forEach((button) => {
+    button.addEventListener("mousedown", (event) => {
+      // Prevent blur before click selection is processed.
+      event.preventDefault();
+    });
+    button.addEventListener("click", () => {
+      const value = normalizeTag(button.dataset.value || "");
+      if (!value) return;
+      addTagChip(tagsEditor, value);
+      const editorInput = tagsEditor.querySelector("input");
+      if (editorInput) {
+        editorInput.value = "";
+        editorInput.focus();
+      }
+      showTagSuggestions(tagsEditor);
+    });
+  });
+}
+
+function hideTagSuggestions(tagsEditor) {
+  const dropdown = tagsEditor?.querySelector(".tag-suggestions");
+  if (!dropdown) return;
+  dropdown.style.display = "none";
+  dropdown.innerHTML = "";
+  dropdown.dataset.activeIndex = "-1";
+}
+
+function selectActiveTagSuggestion(tagsEditor) {
+  const dropdown = tagsEditor?.querySelector(".tag-suggestions");
+  if (!dropdown || dropdown.style.display === "none") return false;
+  const activeIndex = Number(dropdown.dataset.activeIndex || "0");
+  const options = Array.from(dropdown.querySelectorAll(".tag-suggestion-item"));
+  const target = options[activeIndex] || options[0];
+  if (!target) return false;
+
+  const value = normalizeTag(target.dataset.value || "");
+  if (!value) return false;
+
+  addTagChip(tagsEditor, value);
+  const input = tagsEditor.querySelector("input");
+  if (input) {
+    input.value = "";
+    input.focus();
+  }
+  showTagSuggestions(tagsEditor);
+  return true;
+}
+
+function moveTagSuggestion(tagsEditor, delta) {
+  const dropdown = tagsEditor?.querySelector(".tag-suggestions");
+  if (!dropdown || dropdown.style.display === "none") return;
+  const options = Array.from(dropdown.querySelectorAll(".tag-suggestion-item"));
+  if (!options.length) return;
+
+  const current = Number(dropdown.dataset.activeIndex || "0");
+  const next = (current + delta + options.length) % options.length;
+  setTagSuggestionActiveState(dropdown, next);
+}
+
+function addTagFromInput(tagsEditor) {
+  const input = tagsEditor?.querySelector("input");
+  if (!input) return false;
+  const tag = normalizeTag(input.value || "");
+  if (!tag) return false;
+  addTagChip(tagsEditor, tag);
+  input.value = "";
+  showTagSuggestions(tagsEditor);
+  return true;
+}
+
+function handleTagInputValueChange(e) {
+  const tagsEditor = getTagEditorFromInput(e.target);
+  if (!tagsEditor) return;
+  showTagSuggestions(tagsEditor);
+}
+
+function handleTagInputFocus(e) {
+  const tagsEditor = getTagEditorFromInput(e.target);
+  if (!tagsEditor) return;
+  showTagSuggestions(tagsEditor);
+}
+
+function handleTagInputBlur(e) {
+  const tagsEditor = getTagEditorFromInput(e.target);
+  if (!tagsEditor) return;
+  window.setTimeout(() => {
+    const active = document.activeElement;
+    if (active instanceof Node && tagsEditor.contains(active)) return;
+    hideTagSuggestions(tagsEditor);
+  }, 0);
 }
 
 function bindMarkdownPasteListener(textarea) {
@@ -673,7 +868,7 @@ function createNoteHTML(note, index) {
           .map((tag) => `<span class="tag selected-tag">#${escapeHtml(tag)}</span>`)
           .join("")}</div>
         <div class="tags-input" data-role="tags-editor" style="display: none;">
-          <input type="text" placeholder="Add tags (press Enter)" style="border: none; outline: none; flex: 1;">
+          <input type="text" placeholder="Add or select labels" style="border: none; outline: none; flex: 1;">
         </div>
         ${attachedFromHtml}
         ${pageLinkHtml}
@@ -834,7 +1029,7 @@ function closeNoteModal() {
   document.getElementById("noteModal").classList.remove("active");
   document.getElementById("newNoteContent").value = "";
   document.getElementById("tagsInput").innerHTML = `
-    <input type="text" placeholder="Add tags (press Enter)" style="border: none; outline: none; flex: 1;">
+    <input type="text" placeholder="Add or select labels" style="border: none; outline: none; flex: 1;">
   `;
   const input = document.querySelector("#tagsInput input");
   bindTagInputListener(input);
@@ -1821,22 +2016,77 @@ async function captureSelectionAnchorFromActiveTab() {
       target: { tabId: tab.id },
       func: () => {
         const selection = window.getSelection();
-        const text = selection ? selection.toString().trim() : "";
-        if (!text) return null;
+        const range =
+          selection && selection.rangeCount > 0 ? selection.getRangeAt(0).cloneRange() : null;
+        const rawText = selection ? selection.toString() : "";
+        const trimmedText = rawText.trim();
+        if (!range || !trimmedText) return null;
 
-        const fullText = document.body?.innerText || "";
-        const idx = fullText.indexOf(text);
-        const prefix = idx >= 0 ? fullText.slice(Math.max(0, idx - 40), idx) : "";
-        const suffix =
-          idx >= 0
-            ? fullText.slice(idx + text.length, idx + text.length + 40)
-            : "";
+        function getNodePath(root, node) {
+          if (!root || !node) return null;
+          const path = [];
+          let current = node;
+          while (current && current !== root) {
+            const parent = current.parentNode;
+            if (!parent) return null;
+            const index = Array.prototype.indexOf.call(parent.childNodes, current);
+            if (index < 0) return null;
+            path.push(index);
+            current = parent;
+          }
+          if (current !== root) return null;
+          return path.reverse();
+        }
+
+        let exact = trimmedText;
+        let prefix = "";
+        let suffix = "";
+        let textNodePath = null;
+        let startOffset = null;
+        let endOffset = null;
+
+        // Keep an exact DOM pointer when selection is inside a single text node.
+        if (
+          range.startContainer === range.endContainer &&
+          range.startContainer?.nodeType === Node.TEXT_NODE
+        ) {
+          const node = range.startContainer;
+          const fullNodeText = node.nodeValue || "";
+          const selected = fullNodeText.slice(range.startOffset, range.endOffset);
+          const leadingTrim = selected.length - selected.trimStart().length;
+          const trailingTrim = selected.length - selected.trimEnd().length;
+          const localStart = range.startOffset + leadingTrim;
+          const localEnd = range.endOffset - trailingTrim;
+          const localExact = fullNodeText.slice(localStart, localEnd);
+
+          if (localExact) {
+            exact = localExact.slice(0, 1200);
+            prefix = fullNodeText.slice(Math.max(0, localStart - 120), localStart);
+            suffix = fullNodeText.slice(localEnd, localEnd + 120);
+            textNodePath = getNodePath(document.body, node);
+            startOffset = localStart;
+            endOffset = localEnd;
+          }
+        }
+
+        if (!prefix && !suffix) {
+          const fullText = document.body?.innerText || "";
+          const idx = fullText.indexOf(trimmedText);
+          prefix = idx >= 0 ? fullText.slice(Math.max(0, idx - 120), idx) : "";
+          suffix =
+            idx >= 0
+              ? fullText.slice(idx + trimmedText.length, idx + trimmedText.length + 120)
+              : "";
+        }
 
         return {
           type: "text-quote",
-          exact: text.slice(0, 1200),
+          exact,
           prefix: prefix.slice(-120),
           suffix: suffix.slice(0, 120),
+          textNodePath: Array.isArray(textNodePath) ? textNodePath : undefined,
+          startOffset: Number.isInteger(startOffset) ? startOffset : undefined,
+          endOffset: Number.isInteger(endOffset) ? endOffset : undefined,
           capturedAt: new Date().toISOString(),
         };
       },
@@ -1889,22 +2139,50 @@ async function refreshAnchorStates(notes) {
 }
 
 function handleTagInput(e) {
-  if (e.key === "Enter" && e.target.value.trim()) {
-    e.preventDefault();
-    const tag = normalizeTag(e.target.value);
-    if (!tag) return;
+  const tagsEditor = getTagEditorFromInput(e.target);
+  if (!tagsEditor) return;
 
-    addTagChip(e.target.parentElement, tag);
-    e.target.value = "";
+  if (e.key === "ArrowDown") {
+    e.preventDefault();
+    moveTagSuggestion(tagsEditor, 1);
+    return;
+  }
+
+  if (e.key === "ArrowUp") {
+    e.preventDefault();
+    moveTagSuggestion(tagsEditor, -1);
+    return;
+  }
+
+  if (e.key === "Enter" || e.key === "Tab") {
+    if (selectActiveTagSuggestion(tagsEditor)) {
+      e.preventDefault();
+      return;
+    }
+
+    if (e.target.value.trim()) {
+      e.preventDefault();
+      addTagFromInput(tagsEditor);
+    }
+    return;
+  }
+
+  if (e.key === ",") {
+    e.preventDefault();
+    addTagFromInput(tagsEditor);
+    return;
+  }
+
+  if (e.key === "Escape") {
+    hideTagSuggestions(tagsEditor);
   }
 }
 
 function collectTagsForSave(tagsEditor) {
-  const pendingInput = tagsEditor?.querySelector("input")?.value || "";
-  const pendingTag = normalizeTag(pendingInput);
-
-  if (pendingTag) {
-    addTagChip(tagsEditor, pendingTag);
+  const input = tagsEditor?.querySelector("input");
+  if (input) {
+    // Keep save behavior explicit: only chips count as selected labels.
+    input.value = "";
   }
 
   return getTagsFromEditor(tagsEditor);
@@ -1950,12 +2228,14 @@ function addTagChip(tagsEditor, tag) {
   } else {
     tagsEditor.appendChild(chip);
   }
+
+  showTagSuggestions(tagsEditor);
 }
 
 function renderTagEditor(tagsEditor, tags) {
   if (!tagsEditor) return;
   tagsEditor.innerHTML =
-    '<input type="text" placeholder="Add tags (press Enter)" style="border: none; outline: none; flex: 1;">';
+    '<input type="text" placeholder="Add or select labels" style="border: none; outline: none; flex: 1;">';
 
   bindTagInputListener(tagsEditor.querySelector("input"));
 
@@ -1964,6 +2244,8 @@ function renderTagEditor(tagsEditor, tags) {
     .filter(Boolean)
     .sort((a, b) => a.localeCompare(b))
     .forEach((tag) => addTagChip(tagsEditor, tag));
+
+  hideTagSuggestions(tagsEditor);
 }
 
 function areTagArraysEqual(a, b) {

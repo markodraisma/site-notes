@@ -202,9 +202,54 @@
     return true;
   }
 
+  function normalizeComparableText(value) {
+    return String(value || "")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+
+  function resolveTextNodeFromPath(root, path) {
+    if (!root || !Array.isArray(path) || !path.length) return null;
+    let current = root;
+    for (const index of path) {
+      if (!Number.isInteger(index) || index < 0) return null;
+      current = current.childNodes?.[index] || null;
+      if (!current) return null;
+    }
+    return current?.nodeType === Node.TEXT_NODE ? current : null;
+  }
+
+  function getDirectPathMatch(root, anchor) {
+    const path = Array.isArray(anchor?.textNodePath) ? anchor.textNodePath : null;
+    if (!path) return null;
+    if (!Number.isInteger(anchor?.startOffset) || !Number.isInteger(anchor?.endOffset)) {
+      return null;
+    }
+
+    const node = resolveTextNodeFromPath(root, path);
+    if (!node || !isEligibleTextNode(node)) return null;
+
+    const text = node.nodeValue || "";
+    const start = Math.max(0, Math.min(anchor.startOffset, text.length));
+    const end = Math.max(start, Math.min(anchor.endOffset, text.length));
+    if (end <= start) return null;
+
+    const selected = text.slice(start, end);
+    const expected = String(anchor.exact || "");
+    if (!selected) return null;
+    if (expected && normalizeComparableText(selected) !== normalizeComparableText(expected)) {
+      return null;
+    }
+
+    return { node, index: start, score: 100 };
+  }
+
   function getBestTextMatch(root, anchor) {
     const exact = anchor.exact;
     if (!exact) return null;
+
+    const directMatch = getDirectPathMatch(root, anchor);
+    if (directMatch) return directMatch;
 
     const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
     let best = null;

@@ -441,6 +441,7 @@
       }
 
       .tags-input {
+        position: relative;
         display: flex;
         flex-wrap: wrap;
         gap: 4px;
@@ -449,6 +450,46 @@
         border-radius: 4px;
         margin-bottom: 8px;
         min-height: 36px;
+      }
+
+      .tag-suggestions {
+        position: absolute;
+        left: 0;
+        right: 0;
+        top: calc(100% + 4px);
+        max-height: 180px;
+        overflow-y: auto;
+        border: 1px solid var(--border-color);
+        border-radius: 6px;
+        background: #fff;
+        box-shadow: 0 8px 20px rgba(0, 0, 0, 0.1);
+        z-index: 30;
+      }
+
+      .tag-suggestion-item {
+        width: 100%;
+        border: none;
+        border-bottom: 1px solid var(--border-color);
+        background: #fff;
+        text-align: left;
+        padding: 8px 10px;
+        font-size: 0.8rem;
+        color: #1f2937;
+        cursor: pointer;
+      }
+
+      .tag-suggestion-item:last-child {
+        border-bottom: none;
+      }
+
+      .tag-suggestion-item.active,
+      .tag-suggestion-item:hover {
+        background: #eff6ff;
+        color: #1d4ed8;
+      }
+
+      .tag-suggestion-item.create {
+        font-weight: 600;
       }
 
       .tag {
@@ -847,7 +888,7 @@
           <div class="tags-input" id="tagsInput">
             <input
               type="text"
-              placeholder="Add tags (press Enter)"
+              placeholder="Add or select labels"
               style="border: none; outline: none; flex: 1"
             />
           </div>

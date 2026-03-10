@@ -121,13 +121,18 @@
       mdMatch = mdRegex.exec(text);
     }
 
-    const plainMatch = text.match(/https?:\/\/[^\s)]+/);
+    // Ignore URLs already embedded in markdown image/link syntax.
+    const textWithoutMarkdownConstructs = text
+      .replace(/!\[[^\]]*\]\([^)]*\)/g, " ")
+      .replace(/\[[^\]]+\]\([^)]*\)/g, " ");
+
+    const plainMatch = textWithoutMarkdownConstructs.match(/https?:\/\/[^\s)]+/);
     if (plainMatch && plainMatch[0]) {
       const safe = sanitizeUrl(plainMatch[0]);
       if (safe !== "#") return safe;
     }
 
-    const wwwMatch = text.match(/\bwww\.[^\s)]+/i);
+    const wwwMatch = textWithoutMarkdownConstructs.match(/\bwww\.[^\s)]+/i);
     if (wwwMatch && wwwMatch[0]) {
       const safe = sanitizeUrl(wwwMatch[0]);
       if (safe !== "#") return safe;
