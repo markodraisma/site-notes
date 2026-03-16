@@ -144,7 +144,7 @@
   function escapeMarkdownText(text) {
     return String(text || "")
       .replace(/\\/g, "\\\\")
-      .replace(/([`*_\[\]()])/g, "\\$1");
+      .replace(/([`*_\[\]])/g, "\\$1");
   }
 
   function normalizeWhitespace(text) {
