@@ -140,6 +140,30 @@
       #${TOOLTIP_ID} em {
         font-style: italic;
       }
+
+      #${TOOLTIP_ID} table {
+        border-collapse: collapse;
+        width: 100%;
+        margin: 0 0 6px;
+        font-size: 11px;
+      }
+
+      #${TOOLTIP_ID} th,
+      #${TOOLTIP_ID} td {
+        border: 1px solid rgba(255, 255, 255, 0.2);
+        padding: 3px 6px;
+        text-align: left;
+        vertical-align: top;
+      }
+
+      #${TOOLTIP_ID} th {
+        background: rgba(255, 255, 255, 0.1);
+        font-weight: 600;
+      }
+
+      #${TOOLTIP_ID} tr:nth-child(even) td {
+        background: rgba(255, 255, 255, 0.05);
+      }
     `;
     document.documentElement.appendChild(style);
   }
@@ -282,7 +306,7 @@
     return best;
   }
 
-  function wrapTextRange(node, start, length, tooltipHtml, firstLink, noteKey, anchorId) {
+  function wrapTextRange(node, start, length, tooltipHtml, firstLink, noteKey, anchorId, pageUrl) {
     try {
       const fullText = node.nodeValue || "";
       const beforeText = fullText.slice(0, start);
@@ -298,6 +322,7 @@
       wrapper.dataset.noteTooltipHtml = tooltipHtml;
       wrapper.dataset.noteKey = noteKey || "";
       wrapper.dataset.anchorId = anchorId || "";
+      wrapper.dataset.notePageUrl = pageUrl || "";
       if (firstLink) {
         wrapper.classList.add("has-link");
         wrapper.dataset.noteFirstLink = firstLink;
@@ -342,6 +367,8 @@
       el.addEventListener("click", (event) => {
         const firstLink = el.dataset.noteFirstLink;
         if (!firstLink) return;
+
+        if (el.dataset.notePageUrl && el.dataset.notePageUrl !== getNormalizedPageUrl()) return;
 
         if (el.closest("a")) return;
 
@@ -473,6 +500,7 @@
           anchor: entry.anchor,
           anchorId: entry.anchorId,
           noteKey: getNoteKey(note),
+          pageUrl: normalizedUrl,
         }));
       })
       .sort((a, b) => new Date(a.note.createdAt) - new Date(b.note.createdAt));
@@ -498,7 +526,8 @@
         buildTooltipHtml(item.note),
         extractFirstLinkFromMarkdown(item.note.content),
         item.noteKey,
-        item.anchorId
+        item.anchorId,
+        item.pageUrl
       );
     });
 

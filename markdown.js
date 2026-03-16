@@ -49,6 +49,106 @@
     return html;
   }
 
+  function splitTableRow(line) {
+    const raw = String(line || "").trim();
+    if (!raw) return [];
+
+    let content = raw;
+    if (content.startsWith("|")) content = content.slice(1);
+    if (content.endsWith("|")) content = content.slice(0, -1);
+
+    const cells = [];
+    let current = "";
+    let escaped = false;
+
+    for (const char of content) {
+      if (escaped) {
+        current += char;
+        escaped = false;
+        continue;
+      }
+      if (char === "\\") {
+        current += char;
+        escaped = true;
+        continue;
+      }
+      if (char === "|") {
+        cells.push(current.trim());
+        current = "";
+        continue;
+      }
+      current += char;
+    }
+
+    cells.push(current.trim());
+    return cells.map((cell) => cell.replace(/\\\|/g, "|"));
+  }
+
+  function getTableAlignment(delimiterCell) {
+    const marker = String(delimiterCell || "").trim();
+    if (marker.startsWith(":") && marker.endsWith(":")) return "center";
+    if (marker.startsWith(":")) return "left";
+    if (marker.endsWith(":")) return "right";
+    return "";
+  }
+
+  function isTableDelimiterCell(cell) {
+    return /^:?-{3,}:?$/.test(String(cell || "").trim());
+  }
+
+  function parseGfmTable(lines, startIndex) {
+    if (startIndex + 1 >= lines.length) return null;
+
+    const headerLine = String(lines[startIndex] || "").trim();
+    const delimiterLine = String(lines[startIndex + 1] || "").trim();
+    if (!headerLine || !delimiterLine) return null;
+    if (!headerLine.includes("|") || !delimiterLine.includes("|")) return null;
+
+    const headerCells = splitTableRow(headerLine);
+    const delimiterCells = splitTableRow(delimiterLine);
+
+    if (!headerCells.length || headerCells.length !== delimiterCells.length) return null;
+    if (!delimiterCells.every(isTableDelimiterCell)) return null;
+
+    const alignments = delimiterCells.map(getTableAlignment);
+    const rows = [];
+    let index = startIndex + 2;
+
+    while (index < lines.length) {
+      const rowLine = String(lines[index] || "");
+      if (!rowLine.trim()) break;
+      if (!rowLine.includes("|")) break;
+
+      const rowCells = splitTableRow(rowLine);
+      if (!rowCells.length) break;
+
+      while (rowCells.length < headerCells.length) rowCells.push("");
+      if (rowCells.length > headerCells.length) rowCells.length = headerCells.length;
+      rows.push(rowCells);
+      index += 1;
+    }
+
+    const renderCell = (tag, content, alignment) => {
+      const rendered = renderInlineMarkdown(content || "");
+      const alignAttr = alignment ? ` style="text-align:${alignment}"` : "";
+      return `<${tag}${alignAttr}>${rendered}</${tag}>`;
+    };
+
+    const headerHtml = `<thead><tr>${headerCells
+      .map((cell, i) => renderCell("th", cell, alignments[i]))
+      .join("")}</tr></thead>`;
+    const bodyHtml = rows.length
+      ? `<tbody>${rows
+          .map((row) => `<tr>${row.map((cell, i) => renderCell("td", cell, alignments[i])).join("")}</tr>`)
+          .join("")}</tbody>`
+      : "";
+
+    return {
+      html: `<table>${headerHtml}${bodyHtml}</table>`,
+      nextIndex: index,
+    };
+  }
+
   function renderBasicMarkdown(text) {
     const normalized = String(text || "").replace(/\r\n/g, "\n");
     if (!normalized.trim()) return "";
@@ -72,12 +172,22 @@
       listItems = [];
     };
 
-    for (const rawLine of lines) {
+    for (let index = 0; index < lines.length; index += 1) {
+      const rawLine = lines[index];
       const line = rawLine.trimEnd();
 
       if (!line.trim()) {
         flushParagraph();
         flushList();
+        continue;
+      }
+
+      const tableMatch = parseGfmTable(lines, index);
+      if (tableMatch) {
+        flushParagraph();
+        flushList();
+        htmlParts.push(tableMatch.html);
+        index = tableMatch.nextIndex - 1;
         continue;
       }
 
@@ -257,6 +367,57 @@
       .replace(/\n\s+/g, "\n");
   }
 
+  function escapeMarkdownTableCell(text) {
+    return String(text || "")
+      .replace(/\|/g, "\\|")
+      .replace(/\n/g, "<br>");
+  }
+
+  function renderTableNodeToMarkdown(tableNode, baseUrl = "") {
+    const allRows = Array.from(tableNode.querySelectorAll("tr"));
+    if (!allRows.length) return "";
+
+    const headRows = Array.from(tableNode.querySelectorAll("thead tr"));
+    const bodyRows = Array.from(tableNode.querySelectorAll("tbody tr"));
+
+    const headerRow = headRows[0] || allRows[0];
+    if (!headerRow) return "";
+
+    const dataRows = headRows.length
+      ? (bodyRows.length ? bodyRows : allRows.filter((row) => row !== headerRow))
+      : allRows.slice(1);
+
+    const extractCells = (row) =>
+      Array.from(row.children || [])
+        .filter((cell) => {
+          if (!cell.tagName) return false;
+          const t = cell.tagName.toLowerCase();
+          return t === "th" || t === "td";
+        })
+        .map((cell) => {
+          const content = renderInlineNodesToMarkdown(cell.childNodes, baseUrl).trim();
+          return escapeMarkdownTableCell(content);
+        });
+
+    const headerCells = extractCells(headerRow);
+    if (!headerCells.length) return "";
+
+    const columnCount = headerCells.length;
+    const tableLines = [
+      `| ${headerCells.join(" | ")} |`,
+      `| ${new Array(columnCount).fill("---").join(" | ")} |`,
+    ];
+
+    for (const row of dataRows) {
+      const cells = extractCells(row);
+      while (cells.length < columnCount) cells.push("");
+      if (cells.length > columnCount) cells.length = columnCount;
+      tableLines.push(`| ${cells.join(" | ")} |`);
+    }
+
+    return `${tableLines.join("\n")}\n\n`;
+  }
+
   function renderBlockNodeToMarkdown(node, depth = 0, baseUrl = "") {
     if (node.nodeType === Node.TEXT_NODE) {
       return escapeMarkdownText(normalizeWhitespace(node.nodeValue));
@@ -305,6 +466,10 @@
         })
         .filter(Boolean);
       return lines.length ? `${lines.join("\n")}\n\n` : "";
+    }
+
+    if (tag === "table") {
+      return renderTableNodeToMarkdown(node, baseUrl);
     }
 
     if (tag === "br") return "\n";

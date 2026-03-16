@@ -255,6 +255,30 @@
         font-style: italic;
       }
 
+      .note-markdown table {
+        border-collapse: collapse;
+        width: 100%;
+        margin: 0 0 8px;
+        font-size: 0.8rem;
+      }
+
+      .note-markdown th,
+      .note-markdown td {
+        border: 1px solid var(--border-color);
+        padding: 4px 8px;
+        text-align: left;
+        vertical-align: top;
+      }
+
+      .note-markdown th {
+        background: rgba(0, 0, 0, 0.04);
+        font-weight: 600;
+      }
+
+      .note-markdown tr:nth-child(even) td {
+        background: rgba(0, 0, 0, 0.02);
+      }
+
       .note-footer {
         padding: 8px 12px;
         border-top: 1px solid var(--border-color);
