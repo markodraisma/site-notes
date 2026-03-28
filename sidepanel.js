@@ -8,6 +8,7 @@ let anchorStateByNoteId = {};
 let pendingAttachContext = null;
 let deleteUndoState = null;
 let pasteContextState = null;
+let pendingNoteModalContext = null;
 const COPY_CONTEXT_STORAGE_KEY = "__siteNotesLastCopyContext__";
 const COPY_CONTEXT_MAX_AGE_MS = 30 * 60 * 1000;
 
@@ -15,6 +16,119 @@ const MARKDOWN = globalThis.SiteNotesMarkdown || {};
 const STORAGE = globalThis.SiteNotesStorage || {};
 
 const TAGS_STORAGE_KEY = "__siteNotesTags__";
+const SETTINGS_STORAGE_KEY = "__siteNotesSettings__";
+
+const DEFAULT_SETTINGS = {
+  privacyMode: true,
+  copyContextEnabled: false,
+  hostScopeMode: "all",
+  hostScopeEntries: [],
+};
+
+const DEFAULT_FAVICON_DATA_URI =
+  "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%23e5e7eb'/%3E%3Cpath d='M8 6h12l4 4v16H8z' fill='%23ffffff' stroke='%239ca3af'/%3E%3Cpath d='M20 6v4h4' fill='%23e5e7eb'/%3E%3C/svg%3E";
+
+let appSettings = { ...DEFAULT_SETTINGS };
+
+function normalizeHostEntry(value) {
+  const raw = String(value || "").trim().toLowerCase();
+  if (!raw) return "";
+
+  try {
+    const parsed = new URL(raw.includes("://") ? raw : `https://${raw}`);
+    return parsed.hostname || "";
+  } catch {
+    return raw
+      .replace(/^\.+|\.+$/g, "")
+      .replace(/\s+/g, "")
+      .replace(/[^a-z0-9.-]/g, "");
+  }
+}
+
+function parseHostScopeEntries(rawValue) {
+  if (Array.isArray(rawValue)) {
+    return Array.from(new Set(rawValue.map((entry) => normalizeHostEntry(entry)).filter(Boolean)));
+  }
+
+  return Array.from(
+    new Set(
+      String(rawValue || "")
+        .split(/\r?\n/)
+        .map((entry) => normalizeHostEntry(entry))
+        .filter(Boolean)
+    )
+  );
+}
+
+function normalizeSettings(candidate) {
+  const source = candidate && typeof candidate === "object" ? candidate : {};
+  const hostScopeMode = ["all", "allowlist", "denylist"].includes(source.hostScopeMode)
+    ? source.hostScopeMode
+    : DEFAULT_SETTINGS.hostScopeMode;
+
+  return {
+    privacyMode:
+      typeof source.privacyMode === "boolean"
+        ? source.privacyMode
+        : DEFAULT_SETTINGS.privacyMode,
+    copyContextEnabled:
+      typeof source.copyContextEnabled === "boolean"
+        ? source.copyContextEnabled
+        : DEFAULT_SETTINGS.copyContextEnabled,
+    hostScopeMode,
+    hostScopeEntries: parseHostScopeEntries(source.hostScopeEntries),
+  };
+}
+
+async function loadSettings() {
+  try {
+    const data = await chrome.storage.local.get(SETTINGS_STORAGE_KEY);
+    appSettings = normalizeSettings(data?.[SETTINGS_STORAGE_KEY]);
+  } catch {
+    appSettings = { ...DEFAULT_SETTINGS };
+  }
+
+  await chrome.storage.local.set({ [SETTINGS_STORAGE_KEY]: appSettings });
+  return appSettings;
+}
+
+async function saveSettings(patch = {}) {
+  appSettings = normalizeSettings({ ...appSettings, ...patch });
+  await chrome.storage.local.set({ [SETTINGS_STORAGE_KEY]: appSettings });
+  return appSettings;
+}
+
+function applySettingsToUi() {
+  const privacyToggle = document.getElementById("privacyModeToggle");
+  const copyToggle = document.getElementById("copyContextToggle");
+  const hostMode = document.getElementById("hostScopeMode");
+  const hostEntries = document.getElementById("hostScopeEntries");
+
+  if (privacyToggle) privacyToggle.checked = Boolean(appSettings.privacyMode);
+  if (copyToggle) {
+    copyToggle.checked = Boolean(appSettings.copyContextEnabled);
+    copyToggle.disabled = Boolean(appSettings.privacyMode);
+  }
+  if (hostMode) hostMode.value = appSettings.hostScopeMode;
+  if (hostEntries) hostEntries.value = appSettings.hostScopeEntries.join("\n");
+}
+
+function hostIsAllowed(hostname) {
+  const normalized = normalizeHostEntry(hostname);
+  if (!normalized) return true;
+
+  const entries = new Set(parseHostScopeEntries(appSettings.hostScopeEntries));
+  if (appSettings.hostScopeMode === "all") return true;
+  if (appSettings.hostScopeMode === "allowlist") return entries.has(normalized);
+  return !entries.has(normalized);
+}
+
+function sanitizeFaviconUrl(url) {
+  const trimmed = String(url || "").trim();
+  if (!trimmed) return "";
+  if (/^(https?:|data:|chrome:|chrome-extension:)/i.test(trimmed)) return trimmed;
+  return "";
+}
 
 function bindTagInputListener(input) {
   if (!input || input.dataset.tagInputBound === "1") return;
@@ -493,6 +607,7 @@ async function handleMarkdownPaste(e) {
 
 // Initialize the extension
 async function initialize() {
+  await loadSettings();
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   if (!tab?.url) return;
 
@@ -502,9 +617,16 @@ async function initialize() {
 
   // Update UI
   document.getElementById("currentUrl").textContent = currentHostname;
-  document.getElementById(
-    "favicon"
-  ).src = `https://www.google.com/s2/favicons?domain=${currentHostname}`;
+  const favicon = document.getElementById("favicon");
+  if (favicon) {
+    const safeFavicon = appSettings.privacyMode
+      ? ""
+      : sanitizeFaviconUrl(tab.favIconUrl || "");
+    favicon.src = safeFavicon || DEFAULT_FAVICON_DATA_URI;
+    favicon.alt = `${currentHostname} icon`;
+  }
+
+  applySettingsToUi();
 
   if (typeof STORAGE.ensureDataVersion === "function") {
     try {
@@ -593,6 +715,62 @@ function setupEventListeners() {
   document
     .getElementById("importFileInput")
     .addEventListener("change", importData);
+
+  document
+    .getElementById("privacyModeToggle")
+    ?.addEventListener("change", async (event) => {
+      const enabled = Boolean(event.target?.checked);
+      const patch = {
+        privacyMode: enabled,
+      };
+      if (enabled) {
+        patch.copyContextEnabled = false;
+      }
+
+      await saveSettings(patch);
+      applySettingsToUi();
+      await initialize();
+      showToast(
+        enabled ? "Privacy mode enabled." : "Privacy mode disabled.",
+        "success"
+      );
+    });
+
+  document
+    .getElementById("copyContextToggle")
+    ?.addEventListener("change", async (event) => {
+      const enabled = Boolean(event.target?.checked);
+      if (appSettings.privacyMode && enabled) {
+        showToast("Disable privacy mode first to enable copy context.", "warning");
+        applySettingsToUi();
+        return;
+      }
+
+      await saveSettings({ copyContextEnabled: enabled });
+      showToast(
+        enabled
+          ? "Copy source context capture enabled."
+          : "Copy source context capture disabled.",
+        "success"
+      );
+    });
+
+  document
+    .getElementById("hostScopeMode")
+    ?.addEventListener("change", async (event) => {
+      const mode = String(event.target?.value || "all");
+      await saveSettings({ hostScopeMode: mode });
+      await loadNotes(document.getElementById("searchInput")?.value || "");
+      showToast("Host scope mode updated.", "success");
+    });
+
+  document
+    .getElementById("hostScopeEntries")
+    ?.addEventListener("blur", async (event) => {
+      await saveSettings({ hostScopeEntries: event.target?.value || "" });
+      await loadNotes(document.getElementById("searchInput")?.value || "");
+      showToast("Host scope entries updated.", "success", null, 1800);
+    });
 
   document.getElementById("toastCloseBtn")?.addEventListener("click", () => {
     hideToast();
@@ -776,6 +954,12 @@ async function loadNotes(searchTerm = "") {
   const allNotes = await getAllNotes();
   let filteredNotes = [];
 
+  if (!hostIsAllowed(currentHostname) && viewMode !== "all") {
+    currentNotes = [];
+    displayNotes([]);
+    return;
+  }
+
   switch (viewMode) {
     case "page":
       filteredNotes = allNotes.filter((note) => noteAppliesToPage(note, currentUrl));
@@ -790,6 +974,8 @@ async function loadNotes(searchTerm = "") {
       filteredNotes = allNotes;
       break;
   }
+
+  filteredNotes = filteredNotes.filter((note) => hostIsAllowed(getHostnameFromUrl(note.url)));
 
   // Filter by search term
   if (searchTerm) {
@@ -856,12 +1042,26 @@ function displayNotes(notes) {
 function createNoteHTML(note, index) {
   const created = new Date(note.createdAt).toLocaleString();
   const modified = new Date(note.modifiedAt).toLocaleString();
-  const noteUrl = new URL(note.url);
-  const displayUrl = isYouTubeVideo(noteUrl)
-    ? `YouTube: ${noteUrl.searchParams.get("v")}`
-    : noteUrl.pathname === "/"
-    ? noteUrl.hostname
-    : noteUrl.pathname;
+  let displayUrl = "Invalid URL";
+  try {
+    const noteUrl = new URL(note.url);
+    displayUrl = isYouTubeVideo(noteUrl)
+      ? `YouTube: ${noteUrl.searchParams.get("v")}`
+      : noteUrl.pathname === "/"
+      ? noteUrl.hostname
+      : noteUrl.pathname;
+  } catch {
+    displayUrl = trimToLength(String(note.url || "Invalid URL"), 80);
+  }
+
+  const safeNoteHref = sanitizeUrl(note.url);
+  const escapedNoteUrl = escapeHtml(String(note.url || ""));
+  const noteLinkHtml =
+    safeNoteHref === "#"
+      ? `<span class="note-url" title="${escapedNoteUrl}">${escapeHtml(displayUrl)}</span>`
+      : `<a href="${safeNoteHref}" class="note-url" title="${escapedNoteUrl}">${escapeHtml(
+          displayUrl
+        )}</a>`;
 
   const anchorsForCurrentPage = getAnchorsForPage(note, currentUrl);
   const pageLinkedWithoutAnchor =
@@ -915,16 +1115,14 @@ function createNoteHTML(note, index) {
     .sort((a, b) => a.localeCompare(b));
 
   return `
-    <div class="note-card" data-index="${index}" data-url="${note.url}">
+    <div class="note-card" data-index="${index}" data-url="${escapedNoteUrl}">
       <div class="note-header">
         <div class="note-title">
           Note ${index + 1}
           ${
             viewMode !== "page"
               ? `
-            <a href="${note.url}" class="note-url" title="${note.url}">
-              ${displayUrl}
-            </a>
+            ${noteLinkHtml}
           `
               : ""
           }
@@ -1104,7 +1302,8 @@ async function openNoteModal() {
   document.getElementById("noteModal").classList.add("active");
   await refreshTagCatalog();
   renderTagEditor(document.getElementById("tagsInput"), []);
-  pendingSelectionAnchor = await captureSelectionAnchorFromActiveTab();
+  pendingNoteModalContext = await getActiveTabContext();
+  pendingSelectionAnchor = await captureSelectionAnchorFromActiveTab(pendingNoteModalContext);
   renderSelectionAnchorHint();
   document.getElementById("newNoteContent").focus();
 }
@@ -1118,6 +1317,7 @@ function closeNoteModal() {
   const input = document.querySelector("#tagsInput input");
   bindTagInputListener(input);
   pendingSelectionAnchor = null;
+  pendingNoteModalContext = null;
   const hint = document.getElementById("selectionAnchorHint");
   if (hint) {
     hint.style.display = "none";
@@ -1125,11 +1325,16 @@ function closeNoteModal() {
   }
 }
 
-function openSettingsModal() {
+async function openSettingsModal() {
+  await loadSettings();
+  applySettingsToUi();
   document.getElementById("settingsModal").classList.add("active");
 }
 
-function closeSettingsModal() {
+async function closeSettingsModal() {
+  const hostScopeEntries = document.getElementById("hostScopeEntries")?.value || "";
+  const hostScopeMode = document.getElementById("hostScopeMode")?.value || appSettings.hostScopeMode;
+  await saveSettings({ hostScopeMode, hostScopeEntries });
   document.getElementById("settingsModal").classList.remove("active");
 }
 
@@ -1209,6 +1414,12 @@ async function saveNewNote() {
   const content = document.getElementById("newNoteContent").value.trim();
   if (!content) return;
 
+  const writeContext = pendingNoteModalContext || (await getActiveTabContext());
+  if (!writeContext?.url || !writeContext?.hostname) {
+    showToast("Could not resolve active page context.", "error");
+    return;
+  }
+
   const tags = collectTagsForSave(
     document.getElementById("tagsInput")
   );
@@ -1217,18 +1428,18 @@ async function saveNewNote() {
     content,
     tags,
     anchor: pendingSelectionAnchor,
-    url: currentUrl,
+    url: writeContext.url,
     createdAt: new Date().toISOString(),
     modifiedAt: new Date().toISOString(),
   };
 
   if (typeof STORAGE.saveNote === "function") {
-    await STORAGE.saveNote(newNote, currentHostname);
+    await STORAGE.saveNote(newNote, writeContext.hostname);
   } else {
-    const existingNotes = (await chrome.storage.local.get(currentHostname)) || {};
-    const notes = existingNotes[currentHostname] || [];
+    const existingNotes = (await chrome.storage.local.get(writeContext.hostname)) || {};
+    const notes = existingNotes[writeContext.hostname] || [];
     notes.push(newNote);
-    await chrome.storage.local.set({ [currentHostname]: notes });
+    await chrome.storage.local.set({ [writeContext.hostname]: notes });
   }
 
   await ensureTagsInCatalog(tags);
@@ -1356,7 +1567,13 @@ async function reanchorNote(index, anchorId) {
   const note = currentNotes[index];
   if (!note) return;
 
-  const updatedAnchor = await captureSelectionAnchorFromActiveTab();
+  const opContext = await getActiveTabContext();
+  if (!opContext?.url) {
+    showToast("Could not resolve active page context.", "error");
+    return;
+  }
+
+  const updatedAnchor = await captureSelectionAnchorFromActiveTab(opContext);
   if (!updatedAnchor?.exact) {
     showToast("Select text on the page first, then try Re-anchor.", "error");
     return;
@@ -1373,7 +1590,7 @@ async function reanchorNote(index, anchorId) {
           links[linkIndex] = {
             ...links[linkIndex],
             anchor: updatedAnchor,
-            url: currentUrl,
+            url: opContext.url,
           };
           stored.linkedAnchors = links;
         }
@@ -1404,7 +1621,7 @@ async function reanchorNote(index, anchorId) {
       links[linkIndex] = {
         ...links[linkIndex],
         anchor: updatedAnchor,
-        url: currentUrl,
+        url: opContext.url,
       };
       stored.linkedAnchors = links;
     }
@@ -1633,10 +1850,17 @@ async function attachExistingNote(index) {
   const source = currentNotes[index];
   if (!source) return;
 
-  const selectionAnchor = await captureSelectionAnchorFromActiveTab();
+  const targetContext = await getActiveTabContext();
+  if (!targetContext?.url) {
+    showToast("Could not resolve active page context.", "error");
+    return;
+  }
+
+  const selectionAnchor = await captureSelectionAnchorFromActiveTab(targetContext);
 
   pendingAttachContext = {
     source,
+    targetContext,
     selectionAnchor,
   };
   openAttachNoteModal();
@@ -1681,7 +1905,14 @@ async function completeAttachExistingNote(mode) {
     return;
   }
 
-  const { source, selectionAnchor } = pendingAttachContext;
+  const { source, selectionAnchor, targetContext } = pendingAttachContext;
+  if (!targetContext?.url) {
+    showToast("Could not resolve active page context.", "error");
+    closeAttachNoteModal();
+    return;
+  }
+
+  const targetUrl = targetContext.url;
   if (mode === "selection" && !selectionAnchor?.exact) {
     showToast("Select text on the page first, then attach to selection.", "error");
     return;
@@ -1692,14 +1923,14 @@ async function completeAttachExistingNote(mode) {
         const links = Array.isArray(stored.linkedAnchors) ? [...stored.linkedAnchors] : [];
 
         if (mode === "page") {
-          const alreadyPageLinked = stored.url === currentUrl || links.some(
-            (entry) => entry?.url === currentUrl && !entry?.anchor?.exact
+          const alreadyPageLinked = stored.url === targetUrl || links.some(
+            (entry) => entry?.url === targetUrl && !entry?.anchor?.exact
           );
           if (alreadyPageLinked) return null;
 
           links.push({
             id: createAnchorLinkId(),
-            url: currentUrl,
+            url: targetUrl,
             attachedFrom: source.url,
             anchor: null,
             createdAt: new Date().toISOString(),
@@ -1710,7 +1941,7 @@ async function completeAttachExistingNote(mode) {
         if (mode === "selection") {
           const duplicate = links.some(
             (entry) =>
-              entry?.url === currentUrl &&
+              entry?.url === targetUrl &&
               entry?.anchor?.exact === selectionAnchor.exact &&
               entry?.anchor?.prefix === selectionAnchor.prefix &&
               entry?.anchor?.suffix === selectionAnchor.suffix
@@ -1719,7 +1950,7 @@ async function completeAttachExistingNote(mode) {
 
           links.push({
             id: createAnchorLinkId(),
-            url: currentUrl,
+            url: targetUrl,
             attachedFrom: source.url,
             anchor: selectionAnchor,
             createdAt: new Date().toISOString(),
@@ -1766,8 +1997,8 @@ async function completeAttachExistingNote(mode) {
     const stored = notes[noteIndex];
     const links = Array.isArray(stored.linkedAnchors) ? [...stored.linkedAnchors] : [];
     if (mode === "page") {
-      const alreadyPageLinked = stored.url === currentUrl || links.some(
-        (entry) => entry?.url === currentUrl && !entry?.anchor?.exact
+      const alreadyPageLinked = stored.url === targetUrl || links.some(
+        (entry) => entry?.url === targetUrl && !entry?.anchor?.exact
       );
       if (alreadyPageLinked) {
         showToast("This note is already linked to the current page.", "warning");
@@ -1777,7 +2008,7 @@ async function completeAttachExistingNote(mode) {
 
       links.push({
         id: createAnchorLinkId(),
-        url: currentUrl,
+        url: targetUrl,
         attachedFrom: source.url,
         anchor: null,
         createdAt: new Date().toISOString(),
@@ -1788,7 +2019,7 @@ async function completeAttachExistingNote(mode) {
     if (mode === "selection") {
       const duplicate = links.some(
         (entry) =>
-          entry?.url === currentUrl &&
+          entry?.url === targetUrl &&
           entry?.anchor?.exact === selectionAnchor.exact &&
           entry?.anchor?.prefix === selectionAnchor.prefix &&
           entry?.anchor?.suffix === selectionAnchor.suffix
@@ -1802,7 +2033,7 @@ async function completeAttachExistingNote(mode) {
 
       links.push({
         id: createAnchorLinkId(),
-        url: currentUrl,
+        url: targetUrl,
         attachedFrom: source.url,
         anchor: selectionAnchor,
         createdAt: new Date().toISOString(),
@@ -1838,16 +2069,34 @@ function toggleActiveButton(activeId, inactiveIds) {
 }
 
 function resetAllData() {
-  if (
-    confirm("Are you sure you want to reset all data? This cannot be undone.")
-  ) {
-    chrome.storage.local.clear(async () => {
-      availableTags = [];
-      await loadNotes();
-      closeSettingsModal();
-      showToast("All data has been reset.", "success");
-    });
+  if (!confirm("Reset all local data? A backup snapshot will be saved first.")) {
+    return;
   }
+
+  const confirmText = prompt("Type RESET to confirm data reset:", "");
+  if (confirmText !== "RESET") {
+    showToast("Reset cancelled.", "warning");
+    return;
+  }
+
+  storageGetAll().then(async (existing) => {
+    await storageSet({
+      __siteNotesBackupBeforeReset__: {
+        createdAt: new Date().toISOString(),
+        data: existing,
+      },
+    });
+
+    await storageClear();
+    await storageSet({
+      [SETTINGS_STORAGE_KEY]: appSettings,
+    });
+
+    availableTags = [];
+    await loadNotes();
+    closeSettingsModal();
+    showToast("All data has been reset. Backup snapshot saved.", "success", null, 4800);
+  });
 }
 
 function exportData() {
@@ -1865,22 +2114,229 @@ function exportData() {
   });
 }
 
+function storageGetAll() {
+  return chrome.storage.local.get(null);
+}
+
+function storageSet(data) {
+  return chrome.storage.local.set(data || {});
+}
+
+function storageClear() {
+  return chrome.storage.local.clear();
+}
+
+function isImportablePageUrl(rawUrl) {
+  try {
+    const parsed = new URL(String(rawUrl || ""));
+    return ["http:", "https:", "file:"].includes(parsed.protocol);
+  } catch {
+    return false;
+  }
+}
+
+function normalizeImportNote(note) {
+  if (!note || typeof note !== "object") return null;
+  if (!isImportablePageUrl(note.url)) return null;
+
+  const content = String(note.content || "").trim();
+  if (!content) return null;
+
+  const createdAt = String(note.createdAt || new Date().toISOString());
+  const modifiedAt = String(note.modifiedAt || createdAt);
+  const tags = Array.isArray(note.tags)
+    ? Array.from(new Set(note.tags.map((tag) => normalizeTag(tag)).filter(Boolean)))
+    : [];
+
+  const linkedAnchors = Array.isArray(note.linkedAnchors)
+    ? note.linkedAnchors
+        .filter((entry) => entry && typeof entry === "object" && isImportablePageUrl(entry.url))
+        .map((entry) => ({
+          id: String(entry.id || createAnchorLinkId()),
+          url: String(entry.url),
+          attachedFrom: entry.attachedFrom ? String(entry.attachedFrom) : undefined,
+          anchor:
+            entry.anchor && typeof entry.anchor === "object" && typeof entry.anchor.exact === "string"
+              ? {
+                  type: "text-quote",
+                  exact: String(entry.anchor.exact || ""),
+                  prefix: String(entry.anchor.prefix || ""),
+                  suffix: String(entry.anchor.suffix || ""),
+                  capturedAt: String(entry.anchor.capturedAt || new Date().toISOString()),
+                }
+              : null,
+          createdAt: String(entry.createdAt || new Date().toISOString()),
+          linkType: entry.linkType ? String(entry.linkType) : undefined,
+        }))
+    : [];
+
+  const normalized = {
+    url: String(note.url),
+    content,
+    tags,
+    createdAt,
+    modifiedAt,
+    linkedAnchors,
+  };
+
+  if (
+    note.anchor &&
+    typeof note.anchor === "object" &&
+    typeof note.anchor.exact === "string" &&
+    note.anchor.exact.trim()
+  ) {
+    normalized.anchor = {
+      type: "text-quote",
+      exact: String(note.anchor.exact),
+      prefix: String(note.anchor.prefix || ""),
+      suffix: String(note.anchor.suffix || ""),
+      capturedAt: String(note.anchor.capturedAt || new Date().toISOString()),
+    };
+  }
+
+  return normalized;
+}
+
+function validateImportPayload(data) {
+  if (!data || typeof data !== "object" || Array.isArray(data)) {
+    return { valid: false, errors: ["Top-level backup payload must be an object."], normalized: null };
+  }
+
+  const allowedMetaKeys = new Set([
+    TAGS_STORAGE_KEY,
+    SETTINGS_STORAGE_KEY,
+    "__siteNotesDataVersion__",
+    "__siteNotesLastCopyContext__",
+    "__siteNotesBackupBeforeImport__",
+    "__siteNotesBackupBeforeReset__",
+  ]);
+
+  const errors = [];
+  const normalized = {};
+
+  Object.entries(data).forEach(([key, value]) => {
+    if (allowedMetaKeys.has(key)) {
+      if (key === TAGS_STORAGE_KEY) {
+        normalized[key] = Array.isArray(value)
+          ? Array.from(new Set(value.map((tag) => normalizeTag(tag)).filter(Boolean))).sort((a, b) =>
+              a.localeCompare(b)
+            )
+          : [];
+      } else if (key === SETTINGS_STORAGE_KEY) {
+        normalized[key] = normalizeSettings(value);
+      } else {
+        normalized[key] = value;
+      }
+      return;
+    }
+
+    if (!Array.isArray(value)) {
+      errors.push(`Bucket '${key}' is not an array.`);
+      return;
+    }
+
+    const notes = value
+      .map((note) => normalizeImportNote(note))
+      .filter(Boolean);
+
+    if (notes.length !== value.length) {
+      errors.push(`Bucket '${key}' has invalid note entries.`);
+    }
+
+    normalized[key] = notes;
+  });
+
+  return {
+    valid: errors.length === 0,
+    errors,
+    normalized,
+  };
+}
+
+function mergeImportData(existing, incoming) {
+  const merged = { ...existing };
+
+  Object.entries(incoming || {}).forEach(([key, value]) => {
+    if (!Array.isArray(value)) {
+      merged[key] = value;
+      return;
+    }
+
+    const current = Array.isArray(existing[key]) ? existing[key] : [];
+    const byId = new Map();
+
+    current.forEach((note) => {
+      byId.set(`${note.url}::${note.createdAt}`, note);
+    });
+    value.forEach((note) => {
+      byId.set(`${note.url}::${note.createdAt}`, note);
+    });
+
+    merged[key] = Array.from(byId.values());
+  });
+
+  return merged;
+}
+
 function importData(e) {
   const file = e.target.files[0];
   if (!file) return;
 
+  const mode = document.getElementById("importModeSelect")?.value || "merge";
+
   const reader = new FileReader();
   reader.onload = async (event) => {
     try {
-      const data = JSON.parse(event.target.result);
-      chrome.storage.local.clear(() => {
-        chrome.storage.local.set(data, async () => {
-          await refreshTagCatalog();
-          await loadNotes();
-          closeSettingsModal();
-          showToast("Backup imported.", "success");
-        });
+      const parsed = JSON.parse(String(event.target.result || "{}"));
+      const validation = validateImportPayload(parsed);
+
+      if (!validation.valid) {
+        showToast(`Import blocked: ${validation.errors[0]}`, "error", null, 5200);
+        return;
+      }
+
+      if (mode === "dry-run") {
+        const bucketCount = Object.entries(validation.normalized).filter(([, value]) =>
+          Array.isArray(value)
+        ).length;
+        showToast(`Dry run passed. ${bucketCount} note bucket(s) validated.`, "success", null, 4200);
+        return;
+      }
+
+      const existing = await storageGetAll();
+      await storageSet({
+        __siteNotesBackupBeforeImport__: {
+          createdAt: new Date().toISOString(),
+          mode,
+          data: existing,
+        },
       });
+
+      if (mode === "replace") {
+        if (!confirm("Replace mode will overwrite all current data.")) {
+          showToast("Import cancelled.", "warning");
+          return;
+        }
+
+        const confirmText = prompt("Type REPLACE to continue:", "");
+        if (confirmText !== "REPLACE") {
+          showToast("Import cancelled.", "warning");
+          return;
+        }
+
+        await storageClear();
+        await storageSet(validation.normalized);
+      } else {
+        const merged = mergeImportData(existing, validation.normalized);
+        await storageSet(merged);
+      }
+
+      await loadSettings();
+      applySettingsToUi();
+      await refreshTagCatalog();
+      await loadNotes();
+      closeSettingsModal();
+      showToast(`Backup imported (${mode}).`, "success");
     } catch (error) {
       showToast("Invalid backup file.", "error");
     }
@@ -1922,6 +2378,14 @@ function noteUrlHasHostname(url, hostname) {
     return new URL(url).hostname === hostname;
   } catch {
     return false;
+  }
+}
+
+function getHostnameFromUrl(url) {
+  try {
+    return new URL(url).hostname || "";
+  } catch {
+    return "";
   }
 }
 
@@ -2091,13 +2555,31 @@ function renderSelectionAnchorHint() {
   )}"`;
 }
 
-async function captureSelectionAnchorFromActiveTab() {
+async function getActiveTabContext() {
   try {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-    if (!tab?.id) return null;
+    if (!tab?.id || !tab?.url) return null;
+
+    const normalizedUrl = normalizeUrlForNotes(tab.url);
+    const hostname = getHostnameFromUrl(normalizedUrl);
+    return {
+      tabId: tab.id,
+      rawUrl: tab.url,
+      url: normalizedUrl,
+      hostname,
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function captureSelectionAnchorFromActiveTab(tabContext = null) {
+  try {
+    const context = tabContext || (await getActiveTabContext());
+    if (!context?.tabId) return null;
 
     const results = await chrome.scripting.executeScript({
-      target: { tabId: tab.id },
+      target: { tabId: context.tabId },
       func: () => {
         const selection = window.getSelection();
         const range =

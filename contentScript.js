@@ -4,8 +4,74 @@
   const STYLE_ID = "sitenotes-anchor-style";
   const TAGS_STORAGE_KEY = "__siteNotesTags__";
   const COPY_CONTEXT_STORAGE_KEY = "__siteNotesLastCopyContext__";
+  const SETTINGS_STORAGE_KEY = "__siteNotesSettings__";
   const MARKDOWN = globalThis.SiteNotesMarkdown || {};
   let renderTimerId = null;
+  let runtimeSettings = {
+    copyContextEnabled: false,
+    hostScopeMode: "all",
+    hostScopeEntries: [],
+  };
+
+  function normalizeHostEntry(value) {
+    const raw = String(value || "").trim().toLowerCase();
+    if (!raw) return "";
+
+    try {
+      const parsed = new URL(raw.includes("://") ? raw : `https://${raw}`);
+      return parsed.hostname || "";
+    } catch {
+      return raw
+        .replace(/^\.+|\.+$/g, "")
+        .replace(/\s+/g, "")
+        .replace(/[^a-z0-9.-]/g, "");
+    }
+  }
+
+  function parseHostScopeEntries(rawValue) {
+    if (Array.isArray(rawValue)) {
+      return Array.from(new Set(rawValue.map((entry) => normalizeHostEntry(entry)).filter(Boolean)));
+    }
+
+    return Array.from(
+      new Set(
+        String(rawValue || "")
+          .split(/\r?\n/)
+          .map((entry) => normalizeHostEntry(entry))
+          .filter(Boolean)
+      )
+    );
+  }
+
+  function normalizeRuntimeSettings(candidate) {
+    const source = candidate && typeof candidate === "object" ? candidate : {};
+    return {
+      copyContextEnabled: Boolean(source.copyContextEnabled),
+      hostScopeMode: ["all", "allowlist", "denylist"].includes(source.hostScopeMode)
+        ? source.hostScopeMode
+        : "all",
+      hostScopeEntries: parseHostScopeEntries(source.hostScopeEntries),
+    };
+  }
+
+  function pageHostAllowed() {
+    const hostname = normalizeHostEntry(window.location.hostname || "");
+    if (!hostname) return true;
+
+    const entries = new Set(parseHostScopeEntries(runtimeSettings.hostScopeEntries));
+    if (runtimeSettings.hostScopeMode === "all") return true;
+    if (runtimeSettings.hostScopeMode === "allowlist") return entries.has(hostname);
+    return !entries.has(hostname);
+  }
+
+  async function loadRuntimeSettings() {
+    try {
+      const data = await chrome.storage.local.get(SETTINGS_STORAGE_KEY);
+      runtimeSettings = normalizeRuntimeSettings(data?.[SETTINGS_STORAGE_KEY]);
+    } catch {
+      runtimeSettings = normalizeRuntimeSettings(null);
+    }
+  }
 
   function isYouTubeVideo(url) {
     return (
@@ -342,6 +408,34 @@
     }
   }
 
+  function sanitizeTooltipHtml(rawHtml) {
+    const parser = new DOMParser();
+    const doc = parser.parseFromString(`<div>${String(rawHtml || "")}</div>`, "text/html");
+    const root = doc.body?.firstElementChild;
+    if (!root) return "Attached note";
+
+    const blockedTags = ["script", "style", "iframe", "object", "embed", "link"];
+    blockedTags.forEach((selector) => {
+      root.querySelectorAll(selector).forEach((node) => node.remove());
+    });
+
+    root.querySelectorAll("*").forEach((el) => {
+      Array.from(el.attributes || []).forEach((attr) => {
+        const name = String(attr.name || "").toLowerCase();
+        const value = String(attr.value || "");
+        if (name.startsWith("on")) {
+          el.removeAttribute(attr.name);
+          return;
+        }
+        if ((name === "href" || name === "src") && /^javascript:/i.test(value.trim())) {
+          el.removeAttribute(attr.name);
+        }
+      });
+    });
+
+    return root.innerHTML || "Attached note";
+  }
+
   function attachTooltipHandlers() {
     const tooltip = ensureTooltip();
 
@@ -350,7 +444,7 @@
         if (window.__siteNotesHideTooltipTimeout) {
           clearTimeout(window.__siteNotesHideTooltipTimeout);
         }
-        tooltip.innerHTML = el.dataset.noteTooltipHtml || "Attached note";
+        tooltip.innerHTML = sanitizeTooltipHtml(el.dataset.noteTooltipHtml || "Attached note");
         tooltip.classList.add("visible");
         moveTooltip(tooltip, event);
       });
@@ -488,6 +582,8 @@
   }
 
   async function loadAnchoredNotesForPage() {
+    if (!pageHostAllowed()) return [];
+
     const normalizedUrl = getNormalizedPageUrl();
     const data = await chrome.storage.local.get(null);
 
@@ -536,6 +632,11 @@
   }
 
   function scheduleRender(delayMs = 150) {
+    if (!pageHostAllowed()) {
+      clearExistingAnchors();
+      return;
+    }
+
     if (renderTimerId) {
       window.clearTimeout(renderTimerId);
     }
@@ -547,6 +648,8 @@
   }
 
   function recordLatestCopyContext() {
+    if (!runtimeSettings.copyContextEnabled) return;
+
     try {
       const payload = {
         url: getNormalizedPageUrl(),
@@ -559,11 +662,22 @@
     }
   }
 
-  document.addEventListener("DOMContentLoaded", scheduleRender);
-  window.addEventListener("load", scheduleRender);
+  document.addEventListener("DOMContentLoaded", async () => {
+    await loadRuntimeSettings();
+    scheduleRender();
+  });
+  window.addEventListener("load", async () => {
+    await loadRuntimeSettings();
+    scheduleRender();
+  });
 
   chrome.storage.onChanged.addListener((changes, areaName) => {
     if (areaName !== "local") return;
+    if (changes[SETTINGS_STORAGE_KEY]) {
+      runtimeSettings = normalizeRuntimeSettings(changes[SETTINGS_STORAGE_KEY].newValue);
+      scheduleRender();
+      return;
+    }
     if (shouldRerenderForStorageChanges(changes)) {
       scheduleRender();
     }
@@ -573,5 +687,7 @@
     recordLatestCopyContext();
   });
 
-  scheduleRender();
+  loadRuntimeSettings().then(() => {
+    scheduleRender();
+  });
 })();

@@ -2,10 +2,6 @@
 <html>
   <head>
     <title>SiteNotes</title>
-    <link
-      href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css"
-      rel="stylesheet"
-    />
     <style>
       :root {
         --primary-color: #2563eb;
@@ -37,7 +33,22 @@
         display: flex;
         align-items: center;
         gap: 8px;
-        margin-bottom: 12px;
+        margin-bottom: 8px;
+      }
+
+      .header-favicon-row {
+        display: flex;
+        justify-content: center;
+        margin: 2px 0 8px;
+      }
+
+      .favicon {
+        width: 14px;
+        height: 14px;
+        border-radius: 3px;
+        border: 1px solid var(--border-color);
+        background: #fff;
+        object-fit: cover;
       }
 
       .url-display {
@@ -556,26 +567,6 @@
         color: var(--danger-color);
       }
 
-      .powered-by {
-        display: flex;
-        width: 100%;
-        justify-content: center;
-        align-items: center;
-        gap: 4px;
-        margin-top: 8px;
-        font-size: 0.75rem;
-        color: #6b7280;
-      }
-
-      .powered-by a {
-        color: var(--primary-color);
-        text-decoration: none;
-      }
-
-      .powered-by a:hover {
-        text-decoration: underline;
-      }
-
       .github-link {
         display: flex;
         width: 100%;
@@ -857,25 +848,105 @@
         font-size: 0.75rem;
         margin-left: 6px;
       }
+
+      .fas {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 1em;
+        height: 1em;
+        font-style: normal;
+        font-weight: 700;
+        line-height: 1;
+      }
+
+      .fa-cog::before {
+        content: "S";
+      }
+
+      .fa-search::before {
+        content: "?";
+      }
+
+      .fa-plus::before {
+        content: "+";
+      }
+
+      .fa-times::before {
+        content: "x";
+      }
+
+      .fa-link::before {
+        content: "@";
+      }
+
+      .fa-pen::before {
+        content: "E";
+      }
+
+      .fa-trash::before {
+        content: "D";
+      }
+
+      .fa-save::before {
+        content: "S";
+      }
+
+      .fa-note-sticky::before {
+        content: "N";
+      }
+
+      .fa-paperclip::before {
+        content: "P";
+      }
+
+      .settings-grid {
+        display: grid;
+        gap: 10px;
+        margin-bottom: 16px;
+      }
+
+      .settings-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+      }
+
+      .settings-row label {
+        font-size: 0.85rem;
+      }
+
+      .settings-control {
+        width: 100%;
+        border: 1px solid var(--border-color);
+        border-radius: 6px;
+        padding: 8px;
+        font-size: 0.85rem;
+      }
+
+      .settings-help {
+        margin: 0;
+        color: #6b7280;
+        font-size: 0.78rem;
+      }
     </style>
   </head>
   <body>
     <div class="header">
       <div class="site-info">
-        <img id="favicon" class="favicon" src="" alt="" />
         <div id="currentUrl" class="url-display"></div>
         <button class="settings-btn" id="settingsBtn" title="Settings">
           <i class="fas fa-cog"></i>
         </button>
       </div>
+      <div class="header-favicon-row">
+        <img id="favicon" class="favicon" src="" alt="" />
+      </div>
       <div class="view-toggle">
         <button id="pageNotesBtn" class="active">Page Notes</button>
         <button id="domainNotesBtn">Domain Notes</button>
         <button id="allNotesBtn">All Notes</button>
-      </div>
-      <div class="powered-by">
-        Powered by:
-        <a href="https://itsvg.in" target="_blank">itsvg.in</a>
       </div>
       <div class="search-bar">
         <div class="search-bar-wrapper">
@@ -947,6 +1018,37 @@
           </button>
         </div>
         <div class="modal-body">
+          <h4 class="section-title">Privacy</h4>
+          <div class="settings-grid">
+            <div class="settings-row">
+              <label for="privacyModeToggle">Privacy mode preset</label>
+              <input id="privacyModeToggle" type="checkbox" />
+            </div>
+            <p class="settings-help">
+              Applies privacy-first defaults suitable for local-only usage.
+            </p>
+            <div class="settings-row">
+              <label for="copyContextToggle">Capture copy source context</label>
+              <input id="copyContextToggle" type="checkbox" />
+            </div>
+            <p class="settings-help">
+              Off by default. When enabled, copy source URL/title can be used for markdown source links.
+            </p>
+            <label for="hostScopeMode">Site scope mode</label>
+            <select id="hostScopeMode" class="settings-control">
+              <option value="all">All sites</option>
+              <option value="allowlist">Allowlist only</option>
+              <option value="denylist">Denylist</option>
+            </select>
+            <label for="hostScopeEntries">Host scope entries (one hostname per line)</label>
+            <textarea
+              id="hostScopeEntries"
+              class="settings-control"
+              rows="4"
+              placeholder="example.com&#10;docs.example.com"
+            ></textarea>
+          </div>
+
           <h4 class="section-title">Tags</h4>
           <p class="section-text">Create nested tags using <code>/</code> like <code>work/project</code>.</p>
           <button
@@ -964,6 +1066,14 @@
           </button>
 
           <h4 style="margin-top: 24px">Export/Import</h4>
+          <label for="importModeSelect" class="section-text" style="display: block; margin-bottom: 6px;">
+            Import mode
+          </label>
+          <select id="importModeSelect" class="settings-control" style="margin-bottom: 10px;">
+            <option value="merge">Merge (safe default)</option>
+            <option value="replace">Replace all (destructive)</option>
+            <option value="dry-run">Dry run (validate only)</option>
+          </select>
           <button
             class="btn btn-secondary"
             id="exportDataBtn"
