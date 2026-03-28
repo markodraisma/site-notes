@@ -8,6 +8,8 @@ let anchorStateByNoteId = {};
 let pendingAttachContext = null;
 let deleteUndoState = null;
 let pasteContextState = null;
+const COPY_CONTEXT_STORAGE_KEY = "__siteNotesLastCopyContext__";
+const COPY_CONTEXT_MAX_AGE_MS = 30 * 60 * 1000;
 
 const MARKDOWN = globalThis.SiteNotesMarkdown || {};
 const STORAGE = globalThis.SiteNotesStorage || {};
@@ -303,6 +305,74 @@ function convertHtmlToPlainText(html) {
   }
 }
 
+function normalizeUrlForNotes(urlLike) {
+  try {
+    const url = new URL(String(urlLike || ""));
+    if (isYouTubeVideo(url)) {
+      return `${url.origin}${url.pathname}?v=${url.searchParams.get("v")}`;
+    }
+    url.search = "";
+    url.hash = "";
+    return url.toString();
+  } catch {
+    return "";
+  }
+}
+
+function escapeMarkdownLinkLabel(text) {
+  return String(text || "")
+    .replace(/\\/g, "\\\\")
+    .replace(/\[/g, "\\[")
+    .replace(/\]/g, "\\]");
+}
+
+function buildSourceMarkdownLine(sourceContext) {
+  const sourceUrl = normalizeUrlForNotes(sourceContext?.url || "");
+  if (!sourceUrl) return "";
+
+  const sourceLabel = escapeMarkdownLinkLabel(
+    sourceContext?.title || getAttachmentSourceLabel(sourceUrl)
+  );
+  return `Source: [${sourceLabel}](${sourceUrl})`;
+}
+
+function prependSourceLineToMarkdown(markdownBody, sourceContext) {
+  const body = String(markdownBody || "").trim();
+  if (!body) return "";
+
+  const sourceLine = buildSourceMarkdownLine(sourceContext);
+  if (!sourceLine) return body;
+
+  if (body.startsWith(`${sourceLine}\n\n`) || body === sourceLine) {
+    return body;
+  }
+
+  return `${sourceLine}\n\n${body}`;
+}
+
+async function getLatestCopySourceContext() {
+  try {
+    const data = await chrome.storage.local.get(COPY_CONTEXT_STORAGE_KEY);
+    const value = data?.[COPY_CONTEXT_STORAGE_KEY];
+    if (!value || typeof value !== "object") return null;
+
+    const sourceUrl = normalizeUrlForNotes(value.url);
+    if (!sourceUrl) return null;
+
+    const copiedAtMs = Number(value.copiedAtMs || 0);
+    if (!Number.isFinite(copiedAtMs)) return null;
+    if (Date.now() - copiedAtMs > COPY_CONTEXT_MAX_AGE_MS) return null;
+
+    return {
+      url: sourceUrl,
+      title: String(value.title || "").trim(),
+      copiedAtMs,
+    };
+  } catch {
+    return null;
+  }
+}
+
 async function readClipboardPayload() {
   let html = "";
   let text = "";
@@ -351,17 +421,19 @@ async function pasteFromContextMenu(mode) {
     textarea.selectionEnd = ctx.selectionEnd;
   }
 
+  const frozenSourceContext = await getLatestCopySourceContext();
   const { html, text, available } = await readClipboardPayload();
   let toInsert = "";
 
   if (mode === "markdown") {
     const converter = MARKDOWN.convertHtmlToMarkdown;
     if (html && typeof converter === "function") {
-      toInsert = converter(html, currentUrl);
+      toInsert = converter(html, frozenSourceContext?.url || currentUrl);
     }
     if (!toInsert) {
       toInsert = text || convertHtmlToPlainText(html);
     }
+    toInsert = prependSourceLineToMarkdown(toInsert, frozenSourceContext);
   } else {
     toInsert = text || convertHtmlToPlainText(html);
   }
@@ -376,9 +448,17 @@ async function pasteFromContextMenu(mode) {
   }
 
   insertTextAtCursor(textarea, toInsert);
+
+  if (mode === "markdown") {
+    if (frozenSourceContext?.url) {
+      showToast("Pasted as markdown with source page link.", "success", null, 2200);
+    } else {
+      showToast("Pasted as markdown (source page link unavailable).", "warning", null, 2600);
+    }
+  }
 }
 
-function handleMarkdownPaste(e) {
+async function handleMarkdownPaste(e) {
   const textarea = e.currentTarget;
   if (!(textarea instanceof HTMLTextAreaElement)) return;
 
@@ -391,11 +471,24 @@ function handleMarkdownPaste(e) {
   const converter = MARKDOWN.convertHtmlToMarkdown;
   if (typeof converter !== "function") return;
 
-  const markdown = converter(html, currentUrl);
+  e.preventDefault();
+
+  const frozenSourceContext = await getLatestCopySourceContext();
+  let markdown = converter(html, frozenSourceContext?.url || currentUrl);
+  if (!markdown) {
+    markdown = clipboard.getData("text/plain") || convertHtmlToPlainText(html);
+  }
+  markdown = prependSourceLineToMarkdown(markdown, frozenSourceContext);
+
   if (!markdown) return;
 
-  e.preventDefault();
   insertTextAtCursor(textarea, markdown);
+
+  if (frozenSourceContext?.url) {
+    showToast("Pasted as markdown with source page link.", "success", null, 2200);
+  } else {
+    showToast("Pasted as markdown (source page link unavailable).", "warning", null, 2600);
+  }
 }
 
 // Initialize the extension
@@ -405,16 +498,7 @@ async function initialize() {
 
   const url = new URL(tab.url);
   currentHostname = url.hostname;
-
-  // Special handling for YouTube videos
-  if (isYouTubeVideo(url)) {
-    currentUrl = `${url.origin}${url.pathname}?v=${url.searchParams.get("v")}`;
-  } else {
-    // For other URLs, remove query parameters and hash
-    url.search = "";
-    url.hash = "";
-    currentUrl = url.toString();
-  }
+  currentUrl = normalizeUrlForNotes(tab.url);
 
   // Update UI
   document.getElementById("currentUrl").textContent = currentHostname;

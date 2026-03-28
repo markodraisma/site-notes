@@ -3,6 +3,7 @@
   const TOOLTIP_ID = "sitenotes-anchor-tooltip";
   const STYLE_ID = "sitenotes-anchor-style";
   const TAGS_STORAGE_KEY = "__siteNotesTags__";
+  const COPY_CONTEXT_STORAGE_KEY = "__siteNotesLastCopyContext__";
   const MARKDOWN = globalThis.SiteNotesMarkdown || {};
   let renderTimerId = null;
 
@@ -545,6 +546,19 @@
     }, delayMs);
   }
 
+  function recordLatestCopyContext() {
+    try {
+      const payload = {
+        url: getNormalizedPageUrl(),
+        title: String(document.title || "").trim().slice(0, 180),
+        copiedAtMs: Date.now(),
+      };
+      chrome.storage.local.set({ [COPY_CONTEXT_STORAGE_KEY]: payload });
+    } catch {
+      // Ignore copy-context persistence failures.
+    }
+  }
+
   document.addEventListener("DOMContentLoaded", scheduleRender);
   window.addEventListener("load", scheduleRender);
 
@@ -553,6 +567,10 @@
     if (shouldRerenderForStorageChanges(changes)) {
       scheduleRender();
     }
+  });
+
+  document.addEventListener("copy", () => {
+    recordLatestCopyContext();
   });
 
   scheduleRender();

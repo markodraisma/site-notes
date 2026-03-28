@@ -22,6 +22,7 @@ The **Site Notes Chrome Extension** is a lightweight tool designed to enhance yo
 - Read mode renders basic rich text: links, bold, italic, inline code, paragraphs, and line breaks.
 - Add-note modal includes a compact markdown quick help for headings, lists, and links.
 - Paste rich copied webpage content directly into note editors and it is converted to markdown.
+- Markdown paste prepends a source-page link captured at copy time, so references stay correct even after switching tabs/pages.
 - Right-click in note editors for `Paste as Markdown` (default) or `Paste as Plain Text`.
 - `Ctrl/Cmd+Z` undo works for typing and paste-insert actions in note editors.
 
