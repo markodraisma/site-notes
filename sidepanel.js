@@ -19,10 +19,11 @@ const TAGS_STORAGE_KEY = "__siteNotesTags__";
 const SETTINGS_STORAGE_KEY = "__siteNotesSettings__";
 
 const DEFAULT_SETTINGS = {
-  privacyMode: true,
+  privacyMode: false,
   copyContextEnabled: false,
   hostScopeMode: "all",
   hostScopeEntries: [],
+  sourceLinkMode: "smart",
 };
 
 const DEFAULT_FAVICON_DATA_URI =
@@ -60,11 +61,53 @@ function parseHostScopeEntries(rawValue) {
   );
 }
 
+function normalizeNoteContent(content) {
+  if (typeof content === "string") return content;
+  if (content === null || content === undefined) return "";
+  return String(content);
+}
+
+function normalizeNoteTags(tags) {
+  if (Array.isArray(tags)) {
+    return Array.from(
+      new Set(tags.map((tag) => normalizeTag(String(tag || ""))).filter(Boolean))
+    ).sort((a, b) => a.localeCompare(b));
+  }
+
+  if (typeof tags === "string") {
+    // Backward-compatible parsing for legacy comma/newline separated tag strings.
+    return Array.from(
+      new Set(
+        tags
+          .split(/[\n,]/)
+          .map((tag) => normalizeTag(tag))
+          .filter(Boolean)
+      )
+    ).sort((a, b) => a.localeCompare(b));
+  }
+
+  return [];
+}
+
+function normalizeNoteForUi(note) {
+  if (!note || typeof note !== "object") return null;
+  if (!note.url) return null;
+
+  return {
+    ...note,
+    content: normalizeNoteContent(note.content),
+    tags: normalizeNoteTags(note.tags),
+  };
+}
+
 function normalizeSettings(candidate) {
   const source = candidate && typeof candidate === "object" ? candidate : {};
   const hostScopeMode = ["all", "allowlist", "denylist"].includes(source.hostScopeMode)
     ? source.hostScopeMode
     : DEFAULT_SETTINGS.hostScopeMode;
+  const sourceLinkMode = ["always", "smart", "never"].includes(source.sourceLinkMode)
+    ? source.sourceLinkMode
+    : DEFAULT_SETTINGS.sourceLinkMode;
 
   return {
     privacyMode:
@@ -77,6 +120,7 @@ function normalizeSettings(candidate) {
         : DEFAULT_SETTINGS.copyContextEnabled,
     hostScopeMode,
     hostScopeEntries: parseHostScopeEntries(source.hostScopeEntries),
+    sourceLinkMode,
   };
 }
 
@@ -111,6 +155,8 @@ function applySettingsToUi() {
   }
   if (hostMode) hostMode.value = appSettings.hostScopeMode;
   if (hostEntries) hostEntries.value = appSettings.hostScopeEntries.join("\n");
+  const sourceLinkModeSelect = document.getElementById("sourceLinkMode");
+  if (sourceLinkModeSelect) sourceLinkModeSelect.value = appSettings.sourceLinkMode;
 }
 
 function hostIsAllowed(hostname) {
@@ -464,6 +510,50 @@ function prependSourceLineToMarkdown(markdownBody, sourceContext) {
   return `${sourceLine}\n\n${body}`;
 }
 
+// Smart variant: respects sourceLinkMode setting and existing note content.
+// - "always": same as prependSourceLineToMarkdown (prepend unconditionally).
+// - "never": returns body unchanged.
+// - "smart" (default):
+//     empty editor  → prepend at top (new note).
+//     same source already present anywhere → skip (no duplicate).
+//     different source → prepend inline with pasted block (at cursor, not top of note).
+function applySourceLineToMarkdown(markdownBody, sourceContext, existingContent) {
+  const body = String(markdownBody || "").trim();
+  if (!body) return "";
+
+  const mode = appSettings.sourceLinkMode || "smart";
+  if (mode === "never") return body;
+
+  const sourceLine = buildSourceMarkdownLine(sourceContext);
+  if (!sourceLine) return body;
+
+  // Idempotent: pasted text already begins with this source line.
+  if (body.startsWith(`${sourceLine}\n\n`) || body === sourceLine) {
+    return body;
+  }
+
+  if (mode === "always") {
+    return `${sourceLine}\n\n${body}`;
+  }
+
+  // "smart" mode.
+  const existing = String(existingContent || "").trim();
+
+  // Empty editor (new note or blank edit): prepend at top.
+  if (!existing) {
+    return `${sourceLine}\n\n${body}`;
+  }
+
+  // Same source already somewhere in the note: skip the marker entirely.
+  if (existing.includes(sourceLine)) {
+    return body;
+  }
+
+  // Different source: attach the source marker inline with the pasted block
+  // (inserted at cursor position, so it sits near the new content, not at the top).
+  return `${sourceLine}\n\n${body}`;
+}
+
 async function getLatestCopySourceContext() {
   try {
     const data = await chrome.storage.local.get(COPY_CONTEXT_STORAGE_KEY);
@@ -547,7 +637,7 @@ async function pasteFromContextMenu(mode) {
     if (!toInsert) {
       toInsert = text || convertHtmlToPlainText(html);
     }
-    toInsert = prependSourceLineToMarkdown(toInsert, frozenSourceContext);
+    toInsert = applySourceLineToMarkdown(toInsert, frozenSourceContext, textarea.value);
   } else {
     toInsert = text || convertHtmlToPlainText(html);
   }
@@ -564,10 +654,13 @@ async function pasteFromContextMenu(mode) {
   insertTextAtCursor(textarea, toInsert);
 
   if (mode === "markdown") {
-    if (frozenSourceContext?.url) {
-      showToast("Pasted as markdown with source page link.", "success", null, 2200);
+    const sourceLine = buildSourceMarkdownLine(frozenSourceContext);
+    if (sourceLine && toInsert.startsWith(sourceLine)) {
+      showToast("Pasted as markdown with source link.", "success", null, 2200);
+    } else if (frozenSourceContext?.url) {
+      showToast("Pasted as markdown.", "success", null, 2000);
     } else {
-      showToast("Pasted as markdown (source page link unavailable).", "warning", null, 2600);
+      showToast("Pasted as markdown (source context unavailable).", "warning", null, 2600);
     }
   }
 }
@@ -592,16 +685,19 @@ async function handleMarkdownPaste(e) {
   if (!markdown) {
     markdown = clipboard.getData("text/plain") || convertHtmlToPlainText(html);
   }
-  markdown = prependSourceLineToMarkdown(markdown, frozenSourceContext);
+  markdown = applySourceLineToMarkdown(markdown, frozenSourceContext, textarea.value);
 
   if (!markdown) return;
 
   insertTextAtCursor(textarea, markdown);
 
-  if (frozenSourceContext?.url) {
-    showToast("Pasted as markdown with source page link.", "success", null, 2200);
+  const sourceLine = buildSourceMarkdownLine(frozenSourceContext);
+  if (sourceLine && markdown.startsWith(sourceLine)) {
+    showToast("Pasted as markdown with source link.", "success", null, 2200);
+  } else if (frozenSourceContext?.url) {
+    showToast("Pasted as markdown.", "success", null, 2000);
   } else {
-    showToast("Pasted as markdown (source page link unavailable).", "warning", null, 2600);
+    showToast("Pasted as markdown (source context unavailable).", "warning", null, 2600);
   }
 }
 
@@ -770,6 +866,14 @@ function setupEventListeners() {
       await saveSettings({ hostScopeEntries: event.target?.value || "" });
       await loadNotes(document.getElementById("searchInput")?.value || "");
       showToast("Host scope entries updated.", "success", null, 1800);
+    });
+
+  document
+    .getElementById("sourceLinkMode")
+    ?.addEventListener("change", async (event) => {
+      const mode = String(event.target?.value || "smart");
+      await saveSettings({ sourceLinkMode: mode });
+      showToast("Source link mode updated.", "success", null, 1800);
     });
 
   document.getElementById("toastCloseBtn")?.addEventListener("click", () => {
@@ -982,8 +1086,8 @@ async function loadNotes(searchTerm = "") {
     const term = searchTerm.toLowerCase();
     filteredNotes = filteredNotes.filter(
       (note) =>
-        note.content.toLowerCase().includes(term) ||
-        (note.tags || []).some((tag) => tag.toLowerCase().includes(term))
+        normalizeNoteContent(note.content).toLowerCase().includes(term) ||
+        normalizeNoteTags(note.tags).some((tag) => tag.toLowerCase().includes(term))
     );
   }
 
@@ -1000,14 +1104,17 @@ async function loadNotes(searchTerm = "") {
 async function getAllNotes() {
   try {
     if (typeof STORAGE.getAllNotes === "function") {
-      return await STORAGE.getAllNotes();
+      return (await STORAGE.getAllNotes())
+        .map((note) => normalizeNoteForUi(note))
+        .filter((note) => note && note.content);
     }
 
     const data = await chrome.storage.local.get(null);
     return Object.entries(data)
       .filter(([key, value]) => key !== TAGS_STORAGE_KEY && Array.isArray(value))
       .flatMap(([, value]) => value)
-      .filter((note) => note && typeof note === "object" && note.url && note.content);
+      .map((note) => normalizeNoteForUi(note))
+      .filter((note) => note && note.content);
   } catch (error) {
     console.error("Error getting notes:", error);
     return [];
@@ -1109,10 +1216,7 @@ function createNoteHTML(note, index) {
         .join(", ")}</div>`
     : "";
 
-  const selectedTags = (note.tags || [])
-    .map((tag) => normalizeTag(tag))
-    .filter(Boolean)
-    .sort((a, b) => a.localeCompare(b));
+  const selectedTags = normalizeNoteTags(note.tags);
 
   return `
     <div class="note-card" data-index="${index}" data-url="${escapedNoteUrl}">
@@ -1130,6 +1234,9 @@ function createNoteHTML(note, index) {
         <div class="note-actions">
           <button class="note-action-btn attach-btn" title="Attach to current page or selection">
             <i class="fas fa-link"></i>
+          </button>
+          <button class="note-action-btn cancel-edit-btn" title="Cancel edit" style="display: none;">
+            <i class="fas fa-times"></i>
           </button>
           <button class="note-action-btn edit-btn" title="Edit">
             <i class="fas fa-pen"></i>
@@ -1181,6 +1288,7 @@ function attachNoteEventListeners(index) {
   const unlinkAnchorBtns = Array.from(noteCard.querySelectorAll(".unlink-anchor-btn"));
   const unlinkPageBtn = noteCard.querySelector(".unlink-page-link-btn");
   const editBtn = noteCard.querySelector(".edit-btn");
+  const cancelEditBtn = noteCard.querySelector(".cancel-edit-btn");
   const deleteBtn = noteCard.querySelector(".delete-btn");
   let originalContent;
   let originalTags = [];
@@ -1235,16 +1343,22 @@ function attachNoteEventListeners(index) {
     if (contentDisplay) contentDisplay.style.display = "block";
     if (tagsDisplay) tagsDisplay.style.display = "";
     if (tagsEditor) tagsEditor.style.display = "none";
+    if (cancelEditBtn) cancelEditBtn.style.display = "none";
     editBtn.innerHTML = '<i class="fas fa-pen"></i>';
     editBtn.title = "Edit";
   }
 
+  function cancelEdit() {
+    textarea.value = originalContent;
+    if (tagsEditor) {
+      renderTagEditor(tagsEditor, originalTags);
+    }
+    exitEditMode();
+  }
+
   function enterEditMode() {
     originalContent = textarea.value.trim();
-    originalTags = (currentNotes[index]?.tags || [])
-      .map((tag) => normalizeTag(tag))
-      .filter(Boolean)
-      .sort((a, b) => a.localeCompare(b));
+    originalTags = normalizeNoteTags(currentNotes[index]?.tags);
     if (contentDisplay) contentDisplay.style.display = "none";
     textarea.style.display = "block";
     textarea.focus();
@@ -1253,6 +1367,7 @@ function attachNoteEventListeners(index) {
       tagsEditor.style.display = "flex";
       renderTagEditor(tagsEditor, note.tags || []);
     }
+    if (cancelEditBtn) cancelEditBtn.style.display = "";
     editBtn.innerHTML = '<i class="fas fa-save"></i>';
     editBtn.title = "Save";
   }
@@ -1268,6 +1383,14 @@ function attachNoteEventListeners(index) {
     exitEditMode();
   });
 
+  if (cancelEditBtn) {
+    cancelEditBtn.addEventListener("click", () => {
+      const isEditing = textarea.style.display !== "none";
+      if (!isEditing) return;
+      cancelEdit();
+    });
+  }
+
   textarea.addEventListener("keydown", async (e) => {
     const isEditing = textarea.style.display !== "none";
     if (!isEditing) return;
@@ -1280,14 +1403,6 @@ function attachNoteEventListeners(index) {
       return;
     }
 
-    if (e.key === "Escape") {
-      e.preventDefault();
-      textarea.value = originalContent;
-      if (tagsEditor) {
-        renderTagEditor(tagsEditor, originalTags);
-      }
-      exitEditMode();
-    }
   });
 
   deleteBtn.addEventListener("click", () => {
@@ -2740,18 +2855,42 @@ function handleTagInput(e) {
   }
 
   if (e.key === "Escape") {
+    e.preventDefault();
+    e.stopPropagation();
     hideTagSuggestions(tagsEditor);
   }
 }
 
+function parseTagInputValue(rawValue) {
+  const raw = String(rawValue || "").trim();
+  if (!raw) return [];
+
+  // Prefer explicit hashtag tokens when present, e.g. "#foo #bar".
+  const hashtagTokens = raw.match(/#[^\s,]+/g);
+  if (hashtagTokens?.length) {
+    return Array.from(new Set(hashtagTokens.map((token) => normalizeTag(token)).filter(Boolean)));
+  }
+
+  // Fallback: comma/newline separated values.
+  return Array.from(
+    new Set(
+      raw
+        .split(/[\n,]/)
+        .map((token) => normalizeTag(token))
+        .filter(Boolean)
+    )
+  );
+}
+
 function collectTagsForSave(tagsEditor) {
+  const selected = new Set(getTagsFromEditor(tagsEditor));
   const input = tagsEditor?.querySelector("input");
   if (input) {
-    // Keep save behavior explicit: only chips count as selected labels.
+    parseTagInputValue(input.value).forEach((tag) => selected.add(tag));
     input.value = "";
   }
 
-  return getTagsFromEditor(tagsEditor);
+  return Array.from(selected).sort((a, b) => a.localeCompare(b));
 }
 
 function getTagsFromEditor(tagsEditor) {

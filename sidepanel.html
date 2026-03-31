@@ -159,6 +159,11 @@
         background: rgba(220, 38, 38, 0.1);
       }
 
+      .note-action-btn.cancel-edit-btn:hover {
+        color: var(--danger-color);
+        background: rgba(220, 38, 38, 0.1);
+      }
+
       .note-content {
         padding: 12px;
       }
@@ -861,43 +866,43 @@
       }
 
       .fa-cog::before {
-        content: "S";
+        content: "\1F6E0";
       }
 
       .fa-search::before {
-        content: "?";
+        content: "\1F50D";
       }
 
       .fa-plus::before {
-        content: "+";
+        content: "\1F589";
       }
 
       .fa-times::before {
-        content: "x";
+        content: "\00D7";
       }
 
       .fa-link::before {
-        content: "@";
+        content: "\1F517";
       }
 
       .fa-pen::before {
-        content: "E";
+        content: "\1F58A";
       }
 
       .fa-trash::before {
-        content: "D";
+        content: "\1F5D1";
       }
 
       .fa-save::before {
-        content: "S";
+        content: "\1F4BE";
       }
 
       .fa-note-sticky::before {
-        content: "N";
+        content: "\1F5D2";
       }
 
       .fa-paperclip::before {
-        content: "P";
+        content: "\1F4CE";
       }
 
       .settings-grid {
@@ -1025,7 +1030,7 @@
               <input id="privacyModeToggle" type="checkbox" />
             </div>
             <p class="settings-help">
-              Applies privacy-first defaults suitable for local-only usage.
+              Applies privacy-first restrictions suitable for local-only usage.
             </p>
             <div class="settings-row">
               <label for="copyContextToggle">Capture copy source context</label>
@@ -1033,6 +1038,15 @@
             </div>
             <p class="settings-help">
               Off by default. When enabled, copy source URL/title can be used for markdown source links.
+            </p>
+            <label for="sourceLinkMode">Source link on paste</label>
+            <select id="sourceLinkMode" class="settings-control">
+              <option value="smart">Smart (skip if same source)</option>
+              <option value="always">Always</option>
+              <option value="never">Never</option>
+            </select>
+            <p class="settings-help">
+              Smart: prepends a source link for new or empty notes; skips if the same source is already present; appends inline when pasting from a different source.
             </p>
             <label for="hostScopeMode">Site scope mode</label>
             <select id="hostScopeMode" class="settings-control">
