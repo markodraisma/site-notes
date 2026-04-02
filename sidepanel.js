@@ -10,6 +10,7 @@ let pendingAttachContext = null;
 let deleteUndoState = null;
 let pasteContextState = null;
 let pendingNoteModalContext = null;
+let helpMarkdownCache = "";
 const COPY_CONTEXT_STORAGE_KEY = "__siteNotesLastCopyContext__";
 const COPY_CONTEXT_MAX_AGE_MS = 30 * 60 * 1000;
 const EXPORT_META_KEY = "__siteNotesExportMeta__";
@@ -800,6 +801,10 @@ function setupEventListeners() {
     });
   });
 
+  document.getElementById("helpBtn")?.addEventListener("click", openHelpModal);
+  document.getElementById("closeHelpBtn")?.addEventListener("click", closeHelpModal);
+  document.getElementById("doneHelpBtn")?.addEventListener("click", closeHelpModal);
+
   document.getElementById("bulkTagsBtn")?.addEventListener("click", openBulkTagsModal);
   document.getElementById("closeBulkTagsBtn")?.addEventListener("click", closeBulkTagsModal);
   document.getElementById("cancelBulkTagsBtn")?.addEventListener("click", closeBulkTagsModal);
@@ -1031,6 +1036,9 @@ function closeActiveModal() {
       return true;
     case "settingsModal":
       closeSettingsModal();
+      return true;
+    case "helpModal":
+      closeHelpModal();
       return true;
     case "bulkTagsModal":
       closeBulkTagsModal();
@@ -1516,6 +1524,41 @@ async function closeSettingsModal() {
   const hostScopeMode = document.getElementById("hostScopeMode")?.value || appSettings.hostScopeMode;
   await saveSettings({ hostScopeMode, hostScopeEntries });
   document.getElementById("settingsModal").classList.remove("active");
+}
+
+async function loadHelpMarkdown() {
+  if (helpMarkdownCache) return helpMarkdownCache;
+
+  try {
+    const response = await fetch(chrome.runtime.getURL("HELP.md"));
+    if (!response.ok) {
+      throw new Error(`Failed to load help: ${response.status}`);
+    }
+
+    helpMarkdownCache = await response.text();
+  } catch (error) {
+    console.error("Unable to load help markdown:", error);
+    helpMarkdownCache = "# Help\n\nThe help guide could not be loaded. Please reload the extension and try again.";
+  }
+
+  return helpMarkdownCache;
+}
+
+async function openHelpModal() {
+  const modal = document.getElementById("helpModal");
+  const content = document.getElementById("helpContent");
+  if (!modal || !content) return;
+
+  content.innerHTML = "<p>Loading help…</p>";
+  modal.classList.add("active");
+
+  const markdown = await loadHelpMarkdown();
+  content.innerHTML = renderBasicMarkdown(markdown);
+  content.scrollTop = 0;
+}
+
+function closeHelpModal() {
+  document.getElementById("helpModal")?.classList.remove("active");
 }
 
 async function openBulkTagsModal() {

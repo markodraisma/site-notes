@@ -1033,6 +1033,17 @@
         font-size: 0.82rem;
         line-height: 1.45;
       }
+
+      .help-content {
+        font-size: 0.84rem;
+        line-height: 1.5;
+      }
+
+      .help-content h1:first-child,
+      .help-content h2:first-child,
+      .help-content h3:first-child {
+        margin-top: 0;
+      }
     </style>
   </head>
   <body>
@@ -1069,6 +1080,9 @@
           <button type="button" class="search-mode-btn" data-search-mode="tags">Tags</button>
         </div>
         <div class="header-tools-actions">
+          <button type="button" class="btn btn-secondary toolbar-btn" id="helpBtn">
+            Help
+          </button>
           <button type="button" class="btn btn-secondary toolbar-btn" id="bulkTagsBtn">
             Bulk Tags
           </button>
@@ -1244,6 +1258,26 @@
           <a href="https://github.com/VishwaGauravIn/site-notes" target="_blank"
             >GitHub</a
           >
+        </div>
+      </div>
+    </div>
+
+    <!-- Help Modal -->
+    <div class="modal" id="helpModal">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h3>Help</h3>
+          <button class="note-action-btn" id="closeHelpBtn">
+            <i class="fas fa-times"></i>
+          </button>
+        </div>
+        <div class="modal-body">
+          <div id="helpContent" class="note-markdown help-content">
+            <p>Loading help…</p>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-secondary" id="doneHelpBtn">Close</button>
         </div>
       </div>
     </div>

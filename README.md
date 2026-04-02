@@ -13,59 +13,45 @@ The **Site Notes Chrome Extension** is a lightweight tool designed to enhance yo
 ### [🔗 Download Link](https://chromewebstore.google.com/detail/ejadohapkjcpjhlemdjmpnlhjponfomd)
 
 ## Features
-### 1. 📝 Contextual Note-Taking
-- Save notes per exact page URL (with special handling for YouTube video URLs).
-- Switch between Page Notes, Domain Notes, and All Notes.
+### 1. 📝 Context-Aware Notes
+- Save notes per exact page URL, with special handling for YouTube video pages.
+- Switch between **Page Notes**, **Domain Notes**, and **All Notes**.
+- Keep notes tied to the browsing context where they matter most.
 
-### 2. ✍️ Basic Markdown Notes
-- Write notes in plain markdown while editing.
-- Read mode renders basic rich text: links, bold, italic, inline code, paragraphs, and line breaks.
-- Add-note modal includes a compact markdown quick help for headings, lists, and links.
-- Paste rich copied webpage content directly into note editors and it is converted to markdown.
-- Markdown paste prepends a source-page link captured at copy time, so references stay correct even after switching tabs/pages.
-- Right-click in note editors for `Paste as Markdown` (default) or `Paste as Plain Text`.
-- `Ctrl/Cmd+Z` undo works for typing and paste-insert actions in note editors.
+### 2. ✍️ Markdown Editing and Smart Paste
+- Write notes in markdown while editing.
+- Read mode renders headings, lists, tables, links, images, inline code, and paragraphs.
+- Paste webpage content as markdown or plain text from the editor context menu.
+- Optionally prepend a source-page link when pasting copied content.
+- `Ctrl/Cmd+Z` works for normal typing and paste-insert actions.
 
-### 3. 🔗 Link-Friendly Reading
-- Markdown links like `[title](https://example.com)` are clickable.
-- Plain URLs are auto-linked in rendered notes.
-
-### 4. 🏷️ Advanced Tag Management (Gmail-style)
+### 3. 🏷️ Tagging and Bulk Tag Workflows
 - Add tags while creating or editing notes.
-- Choose existing tags from a picker.
-- Create nested tags using `/` (for example `work/project`).
-- Manage tags globally: create, edit (rename + change parent), and delete.
-- Renaming/deleting propagates across all notes and nested children.
+- Pick from existing labels or create nested tags like `work/project`.
+- Manage tags globally: create, rename, re-parent, and delete.
+- Apply **bulk add/remove tag changes** to the current result set.
 
-### 5. 🔍 Search and Filtering
-- Search by note text and tags.
-- Quickly find notes in the current page/domain or across all notes.
+### 4. 🔎 Advanced Search and Filtering
+- Search in **All**, **Text**, or **Tags** mode.
+- Use boolean operators: `AND`, `OR`, `NOT`, and parentheses.
+- Use fielded search like `tag:research` or `text:invoice`.
+- Filter within the current page/domain/all-notes view.
 
-### 6. 📌 Text Anchors (Selection-Aware Notes)
-- Create notes attached to selected text on a page.
-- Notes include anchor metadata and show selected text snippets in the side panel.
-- If DOM/content changes and anchor text is missing later, notes gracefully fall back to page-level behavior.
+### 5. 📌 Anchors, Highlights, and Attachments
+- Create notes from selected text on a page.
+- Show anchor metadata and selected snippets in the side panel.
+- Highlight anchored text directly on the page and show rich hover tooltips.
+- Attach existing notes to the current page or a current text selection.
+- Re-anchor or unlink anchors when a page has changed.
 
-### 7. 🌐 In-Page Highlights and Tooltips
-- Anchored text is highlighted directly on the page.
-- Hovering highlighted text shows a rich tooltip preview of the note (including markdown rendering).
+### 6. 📤 Export, Import, and Restore
+- Export from the main panel for **this site**, **this domain**, **current results**, or **all notes**.
+- Import/restore from **Settings** using **Merge**, **Replace**, or **Dry run** mode.
+- Reset all local data with a backup snapshot saved first.
+- All data stays local in `chrome.storage.local` and works offline.
 
-### 8. 🧷 Attach Existing Notes Anywhere
-- Attach an existing note to the current page.
-- Optionally attach it to currently selected text through an explicit attach modal.
-- Linked notes show "Attached from ..." context in the side panel for better traceability.
-
-### 9. 🖱️ Smart Click Behavior for Anchors
-- If an anchored note contains links, clicking highlighted anchor text opens the first note link in a new tab.
-- Existing native page links are respected and not overridden.
-
-### 10. ⚙️ Data and Privacy
-- All data is stored locally with `chrome.storage.local`.
-- Import/export backups from Settings for **this site**, **this domain**, or **all notes**, plus reset all data.
-- Works offline; no external backend required.
-- Storage schema versioning and automatic migration keep older local data compatible.
-
-### 11. ⌨️ Keyboard Shortcuts
+### 7. ❓ In-App Help and Shortcuts
+- Open a built-in **Help** dialog from the side panel for usage guidance.
 - `Ctrl/Cmd + Enter`: Save note while Add Note modal is open.
 - `Esc`: Close the active modal.
 - `/`: Focus the search input when not typing in a field.
@@ -75,9 +61,11 @@ The **Site Notes Chrome Extension** is a lightweight tool designed to enhance yo
 - `manifest.json`: The configuration file that defines the extension’s permissions, background scripts, and metadata.
 - `background.js`: The background script managing extension logic.
 - `sidepanel.html`: The user interface for the extension’s side panel.
-- `sidepanel.js`: Core side panel logic for notes, tags, markdown rendering, anchors, and modals.
+- `sidepanel.js`: Core side panel logic for notes, tags, search, bulk actions, export/import, and modals.
+- `markdown.js`: Shared markdown rendering and HTML-to-markdown conversion helpers.
 - `storage.js`: Shared storage service for note CRUD and tag rewrite operations.
 - `contentScript.js`: In-page anchor highlighting, rich tooltip rendering, and click behavior for anchored notes.
+- `HELP.md`: In-app usage guide rendered inside the extension’s Help modal.
 
 ### Assets
 - `icon16.png`: 16x16 icon for the extension.
@@ -91,7 +79,7 @@ The **Site Notes Chrome Extension** is a lightweight tool designed to enhance yo
 
 1. Clone the repository or download it as a ZIP file.
    ```bash
-   git clone https://github.com/your-username/site-notes.git
+   git clone https://github.com/VishwaGauravIn/site-notes.git
    ```
 
 2. Open Chrome and navigate to `chrome://extensions/`.
@@ -103,13 +91,15 @@ The **Site Notes Chrome Extension** is a lightweight tool designed to enhance yo
 5. The extension will appear in your toolbar, ready to use!
 
 ## Usage
-1. Select text on a page (optional), then open the side panel and create a note.
-2. Add tags by typing or selecting existing tags.
-3. Use markdown in note content for links and basic formatting.
-4. Manage tags in Settings -> Manage Tags (including nested tags and parent changes).
-5. Attach existing notes to the current page or selected text using the attach action.
-6. Revisit pages to see anchored highlights and tooltips on matching text.
-7. Use keyboard shortcuts for faster navigation and note capture.
+1. Open the side panel on any page and create a note for the current page or text selection.
+2. Add tags by typing them directly or selecting from the suggestion list.
+3. Switch between **Page Notes**, **Domain Notes**, and **All Notes** depending on what you want to review.
+4. Use markdown for structure and links, or paste copied page content as markdown.
+5. Search with plain terms or advanced queries such as `tag:research AND text:browser`.
+6. Use **Bulk Tags** to add or remove tags on the currently visible results.
+7. Use **Export** from the main panel for the current site, domain, results, or the entire note collection.
+8. Open **Settings** when you need to import/restore notes, change privacy options, or manage tags globally.
+9. Open **Help** in the extension for a focused quick-reference guide.
 
 ## Development
 ### Prerequisites
