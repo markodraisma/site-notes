@@ -3517,7 +3517,7 @@ async function captureSelectionAnchorFromActiveTab(tabContext = null) {
               : "";
         }
 
-        return {
+        const anchorData = {
           type: "text-quote",
           exact,
           prefix: prefix.slice(-120),
@@ -3527,6 +3527,14 @@ async function captureSelectionAnchorFromActiveTab(tabContext = null) {
           endOffset: Number.isInteger(endOffset) ? endOffset : undefined,
           capturedAt: new Date().toISOString(),
         };
+
+        try {
+          selection?.removeAllRanges();
+        } catch {
+          // Ignore selection-clear failures.
+        }
+
+        return anchorData;
       },
     });
 
