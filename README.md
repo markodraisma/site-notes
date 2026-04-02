@@ -61,7 +61,7 @@ The **Site Notes Chrome Extension** is a lightweight tool designed to enhance yo
 
 ### 10. ⚙️ Data and Privacy
 - All data is stored locally with `chrome.storage.local`.
-- Import/export backups and reset all data from Settings.
+- Import/export backups from Settings for **this site**, **this domain**, or **all notes**, plus reset all data.
 - Works offline; no external backend required.
 - Storage schema versioning and automatic migration keep older local data compatible.
 

@@ -327,9 +327,10 @@
         border-radius: 8px;
         width: 100%;
         max-width: 500px;
-        max-height: 80vh;
+        max-height: 90vh;
         display: flex;
         flex-direction: column;
+        overflow: hidden;
         box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
       }
 
@@ -339,11 +340,15 @@
         display: flex;
         justify-content: space-between;
         align-items: center;
+        flex-shrink: 0;
       }
 
       .modal-body {
         position: relative;
         padding: 16px;
+        flex: 1 1 auto;
+        min-height: 0;
+        overflow-y: auto;
       }
 
       .modal-footer {
@@ -420,6 +425,92 @@
       .search-input:focus {
         outline: none;
         border-color: var(--primary-color);
+      }
+
+      .header-tools-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        flex-wrap: wrap;
+      }
+
+      .header-tools-actions {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        flex-wrap: wrap;
+      }
+
+      .search-mode-toggle {
+        display: flex;
+        gap: 6px;
+        flex-wrap: wrap;
+      }
+
+      .search-mode-btn {
+        border: 1px solid var(--border-color);
+        background: #fff;
+        color: #6b7280;
+        border-radius: 999px;
+        padding: 4px 10px;
+        font-size: 0.76rem;
+        cursor: pointer;
+      }
+
+      .search-mode-btn.active {
+        color: var(--primary-color);
+        border-color: rgba(37, 99, 235, 0.35);
+        background: rgba(37, 99, 235, 0.1);
+      }
+
+      .export-menu-wrap {
+        position: relative;
+      }
+
+      .toolbar-btn {
+        padding: 6px 10px;
+        font-size: 0.8rem;
+      }
+
+      .toolbar-btn:disabled,
+      .toolbar-menu-item:disabled {
+        opacity: 0.55;
+        cursor: not-allowed;
+      }
+
+      .toolbar-menu {
+        position: absolute;
+        top: calc(100% + 6px);
+        right: 0;
+        min-width: 200px;
+        background: #fff;
+        border: 1px solid var(--border-color);
+        border-radius: 8px;
+        box-shadow: 0 10px 24px rgba(0, 0, 0, 0.12);
+        display: none;
+        overflow: hidden;
+        z-index: 200;
+      }
+
+      .toolbar-menu.visible {
+        display: block;
+      }
+
+      .toolbar-menu-item {
+        width: 100%;
+        border: none;
+        background: #fff;
+        color: #1f2937;
+        text-align: left;
+        padding: 9px 12px;
+        font-size: 0.8rem;
+        cursor: pointer;
+      }
+
+      .toolbar-menu-item:hover {
+        background: #eff6ff;
+        color: #1d4ed8;
       }
 
       .search-icon {
@@ -935,6 +1026,13 @@
         color: #6b7280;
         font-size: 0.78rem;
       }
+
+      .bulk-summary {
+        margin: 0 0 12px;
+        color: #4b5563;
+        font-size: 0.82rem;
+        line-height: 1.45;
+      }
     </style>
   </head>
   <body>
@@ -964,6 +1062,38 @@
           />
         </div>
       </div>
+      <div class="header-tools-row">
+        <div class="search-mode-toggle" aria-label="Search mode">
+          <button type="button" class="search-mode-btn active" data-search-mode="all">All</button>
+          <button type="button" class="search-mode-btn" data-search-mode="text">Text</button>
+          <button type="button" class="search-mode-btn" data-search-mode="tags">Tags</button>
+        </div>
+        <div class="header-tools-actions">
+          <button type="button" class="btn btn-secondary toolbar-btn" id="bulkTagsBtn">
+            Bulk Tags
+          </button>
+          <div class="export-menu-wrap">
+            <button
+              type="button"
+              class="btn btn-secondary toolbar-btn"
+              id="exportMenuBtn"
+              aria-haspopup="true"
+              aria-expanded="false"
+            >
+              Export
+            </button>
+            <div class="toolbar-menu" id="exportMenu">
+              <button type="button" class="toolbar-menu-item" data-export-scope="page">Export this site</button>
+              <button type="button" class="toolbar-menu-item" data-export-scope="domain">Export this domain</button>
+              <button type="button" class="toolbar-menu-item" data-export-scope="results">Export current results</button>
+              <button type="button" class="toolbar-menu-item" data-export-scope="all">Export all notes</button>
+            </div>
+          </div>
+        </div>
+      </div>
+      <p class="section-text" style="margin: 8px 0 0;">
+        Search supports <code>AND</code>, <code>OR</code>, <code>NOT</code>, parentheses, <code>tag:</code>, and <code>text:</code>.
+      </p>
     </div>
 
     <div class="notes-container" id="notesContainer">
@@ -1079,24 +1209,28 @@
             Reset All Data
           </button>
 
-          <h4 style="margin-top: 24px">Export/Import</h4>
+          <h4 style="margin-top: 24px">Import / Restore</h4>
+          <p class="section-text" style="margin-bottom: 8px;">
+            Export is available from the main panel. Use the options below to restore notes.
+          </p>
+          <label for="importScopeSelect" class="section-text" style="display: block; margin-bottom: 6px;">
+            Import scope
+          </label>
+          <select id="importScopeSelect" class="settings-control" style="margin-bottom: 10px;">
+            <option value="page">This site</option>
+            <option value="domain">This domain</option>
+            <option value="all">All notes</option>
+          </select>
           <label for="importModeSelect" class="section-text" style="display: block; margin-bottom: 6px;">
             Import mode
           </label>
           <select id="importModeSelect" class="settings-control" style="margin-bottom: 10px;">
             <option value="merge">Merge (safe default)</option>
-            <option value="replace">Replace all (destructive)</option>
+            <option value="replace">Replace selected scope (destructive)</option>
             <option value="dry-run">Dry run (validate only)</option>
           </select>
-          <button
-            class="btn btn-secondary"
-            id="exportDataBtn"
-            style="margin-right: 8px"
-          >
-            Export Data
-          </button>
           <button class="btn btn-secondary" id="importDataBtn">
-            Import Data
+            Import Notes
           </button>
           <input
             type="file"
@@ -1110,6 +1244,47 @@
           <a href="https://github.com/VishwaGauravIn/site-notes" target="_blank"
             >GitHub</a
           >
+        </div>
+      </div>
+    </div>
+
+    <!-- Bulk Tags Modal -->
+    <div class="modal" id="bulkTagsModal">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h3>Bulk Tag Edit</h3>
+          <button class="note-action-btn" id="closeBulkTagsBtn">
+            <i class="fas fa-times"></i>
+          </button>
+        </div>
+        <div class="modal-body">
+          <p id="bulkTagsSummary" class="bulk-summary"></p>
+
+          <label class="section-text" for="bulkAddTagsInput" style="display: block; margin-bottom: 6px;">
+            Add tags to all current results
+          </label>
+          <div class="tags-input" id="bulkAddTagsInput">
+            <input
+              type="text"
+              placeholder="Add or select labels"
+              style="border: none; outline: none; flex: 1"
+            />
+          </div>
+
+          <label class="section-text" for="bulkRemoveTagsInput" style="display: block; margin: 12px 0 6px;">
+            Remove tags from all current results
+          </label>
+          <div class="tags-input" id="bulkRemoveTagsInput">
+            <input
+              type="text"
+              placeholder="Add or select labels"
+              style="border: none; outline: none; flex: 1"
+            />
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-secondary" id="cancelBulkTagsBtn">Cancel</button>
+          <button class="btn btn-primary" id="applyBulkTagsBtn">Apply to Results</button>
         </div>
       </div>
     </div>

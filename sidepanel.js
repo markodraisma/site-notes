@@ -1,6 +1,7 @@
 let currentUrl = "";
 let currentHostname = "";
 let viewMode = "page"; // "page", "domain", or "all"
+let currentSearchMode = "all"; // "all", "text", or "tags"
 let currentNotes = [];
 let availableTags = [];
 let pendingSelectionAnchor = null;
@@ -11,6 +12,7 @@ let pasteContextState = null;
 let pendingNoteModalContext = null;
 const COPY_CONTEXT_STORAGE_KEY = "__siteNotesLastCopyContext__";
 const COPY_CONTEXT_MAX_AGE_MS = 30 * 60 * 1000;
+const EXPORT_META_KEY = "__siteNotesExportMeta__";
 
 const MARKDOWN = globalThis.SiteNotesMarkdown || {};
 const STORAGE = globalThis.SiteNotesStorage || {};
@@ -778,6 +780,31 @@ function setupEventListeners() {
     debounceTimeout = setTimeout(() => loadNotes(e.target.value), 300);
   });
 
+  document.querySelectorAll("[data-search-mode]").forEach((button) => {
+    button.addEventListener("click", () => {
+      setSearchMode(button.dataset.searchMode || "all");
+      loadNotes(getCurrentSearchTerm());
+    });
+  });
+  setSearchMode(currentSearchMode);
+
+  document.getElementById("exportMenuBtn")?.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    toggleExportMenu();
+  });
+  document.querySelectorAll("[data-export-scope]").forEach((button) => {
+    button.addEventListener("click", () => {
+      closeExportMenu();
+      exportData(button.dataset.exportScope || "all");
+    });
+  });
+
+  document.getElementById("bulkTagsBtn")?.addEventListener("click", openBulkTagsModal);
+  document.getElementById("closeBulkTagsBtn")?.addEventListener("click", closeBulkTagsModal);
+  document.getElementById("cancelBulkTagsBtn")?.addEventListener("click", closeBulkTagsModal);
+  document.getElementById("applyBulkTagsBtn")?.addEventListener("click", applyBulkTagChanges);
+
   // Add note button
   document
     .getElementById("addNoteBtn")
@@ -804,7 +831,7 @@ function setupEventListeners() {
     .addEventListener("click", resetAllData);
   document
     .getElementById("exportDataBtn")
-    .addEventListener("click", exportData);
+    ?.addEventListener("click", () => exportData());
   document.getElementById("importDataBtn").addEventListener("click", () => {
     document.getElementById("importFileInput").click();
   });
@@ -888,13 +915,32 @@ function setupEventListeners() {
   });
 
   document.addEventListener("click", (e) => {
-    const menu = document.getElementById("pasteContextMenu");
-    if (!menu?.classList.contains("visible")) return;
-    if (e.target instanceof Node && menu.contains(e.target)) return;
-    closePasteContextMenu();
+    const pasteMenu = document.getElementById("pasteContextMenu");
+    if (pasteMenu?.classList.contains("visible")) {
+      if (!(e.target instanceof Node) || !pasteMenu.contains(e.target)) {
+        closePasteContextMenu();
+      }
+    }
+
+    const exportMenu = document.getElementById("exportMenu");
+    const exportMenuBtn = document.getElementById("exportMenuBtn");
+    const clickedInsideExportMenu =
+      e.target instanceof Node &&
+      (exportMenu?.contains(e.target) || exportMenuBtn?.contains(e.target));
+
+    if (!clickedInsideExportMenu) {
+      closeExportMenu();
+    }
   });
 
-  document.addEventListener("scroll", closePasteContextMenu, true);
+  document.addEventListener(
+    "scroll",
+    () => {
+      closePasteContextMenu();
+      closeExportMenu();
+    },
+    true
+  );
 
   // Global keyboard shortcuts
   document.addEventListener("keydown", handleGlobalKeydown);
@@ -986,6 +1032,9 @@ function closeActiveModal() {
     case "settingsModal":
       closeSettingsModal();
       return true;
+    case "bulkTagsModal":
+      closeBulkTagsModal();
+      return true;
     case "tagsManagerModal":
       closeTagsManagerModal();
       return true;
@@ -1011,11 +1060,19 @@ async function handleGlobalKeydown(e) {
   const key = e.key;
   const activeModal = getActiveModal();
   const pasteMenu = document.getElementById("pasteContextMenu");
+  const exportMenu = document.getElementById("exportMenu");
   const pasteMenuOpen = Boolean(pasteMenu?.classList.contains("visible"));
+  const exportMenuOpen = Boolean(exportMenu?.classList.contains("visible"));
 
   if (pasteMenuOpen && key === "Escape") {
     e.preventDefault();
     closePasteContextMenu();
+    return;
+  }
+
+  if (exportMenuOpen && key === "Escape") {
+    e.preventDefault();
+    closeExportMenu();
     return;
   }
 
@@ -1054,7 +1111,9 @@ async function handleGlobalKeydown(e) {
 }
 
 // Load notes based on current view mode and search term
-async function loadNotes(searchTerm = "") {
+async function loadNotes(searchTerm = null) {
+  const effectiveSearchTerm =
+    searchTerm === null || searchTerm === undefined ? getCurrentSearchTerm() : String(searchTerm);
   const allNotes = await getAllNotes();
   let filteredNotes = [];
 
@@ -1082,12 +1141,9 @@ async function loadNotes(searchTerm = "") {
   filteredNotes = filteredNotes.filter((note) => hostIsAllowed(getHostnameFromUrl(note.url)));
 
   // Filter by search term
-  if (searchTerm) {
-    const term = searchTerm.toLowerCase();
-    filteredNotes = filteredNotes.filter(
-      (note) =>
-        normalizeNoteContent(note.content).toLowerCase().includes(term) ||
-        normalizeNoteTags(note.tags).some((tag) => tag.toLowerCase().includes(term))
+  if (effectiveSearchTerm && effectiveSearchTerm.trim()) {
+    filteredNotes = filteredNotes.filter((note) =>
+      noteMatchesSearch(note, effectiveSearchTerm, currentSearchMode)
     );
   }
 
@@ -1125,6 +1181,8 @@ async function getAllNotes() {
 function displayNotes(notes) {
   const container = document.getElementById("notesContainer");
   const searchTerm = document.getElementById("searchInput").value;
+
+  updateHeaderActionsState(notes);
 
   if (notes.length === 0) {
     container.innerHTML = `
@@ -1443,6 +1501,13 @@ function closeNoteModal() {
 async function openSettingsModal() {
   await loadSettings();
   applySettingsToUi();
+
+  const preferredScope = ["page", "domain", "all"].includes(viewMode) ? viewMode : "all";
+  const exportScopeSelect = document.getElementById("exportScopeSelect");
+  const importScopeSelect = document.getElementById("importScopeSelect");
+  if (exportScopeSelect) exportScopeSelect.value = preferredScope;
+  if (importScopeSelect) importScopeSelect.value = preferredScope;
+
   document.getElementById("settingsModal").classList.add("active");
 }
 
@@ -1451,6 +1516,73 @@ async function closeSettingsModal() {
   const hostScopeMode = document.getElementById("hostScopeMode")?.value || appSettings.hostScopeMode;
   await saveSettings({ hostScopeMode, hostScopeEntries });
   document.getElementById("settingsModal").classList.remove("active");
+}
+
+async function openBulkTagsModal() {
+  if (!currentNotes.length) {
+    showToast("No current results to edit.", "warning", null, 2800);
+    return;
+  }
+
+  await refreshTagCatalog();
+  renderTagEditor(document.getElementById("bulkAddTagsInput"), []);
+  renderTagEditor(document.getElementById("bulkRemoveTagsInput"), []);
+
+  const searchTerm = getCurrentSearchTerm().trim();
+  const summary = document.getElementById("bulkTagsSummary");
+  if (summary) {
+    const scopeDetail = searchTerm
+      ? `matching "${searchTerm}"`
+      : `from the current ${viewMode} view`;
+    summary.textContent = `Apply tag changes to ${currentNotes.length} note(s) ${scopeDetail}.`;
+  }
+
+  document.getElementById("bulkTagsModal").classList.add("active");
+}
+
+function closeBulkTagsModal() {
+  document.getElementById("bulkTagsModal")?.classList.remove("active");
+}
+
+async function applyBulkTagChanges() {
+  if (!currentNotes.length) {
+    closeBulkTagsModal();
+    showToast("No current results to edit.", "warning", null, 2800);
+    return;
+  }
+
+  const addTags = collectTagsForSave(document.getElementById("bulkAddTagsInput"));
+  const removeTags = collectTagsForSave(document.getElementById("bulkRemoveTagsInput"));
+
+  if (!addTags.length && !removeTags.length) {
+    showToast("Choose tag(s) to add or remove.", "warning", null, 2800);
+    return;
+  }
+
+  let updatedCount = 0;
+  for (const note of currentNotes) {
+    const existingTags = normalizeNoteTags(note.tags);
+    const nextSet = new Set(existingTags);
+    removeTags.forEach((tag) => nextSet.delete(tag));
+    addTags.forEach((tag) => nextSet.add(tag));
+
+    const nextTags = Array.from(nextSet).sort((a, b) => a.localeCompare(b));
+    if (areTagArraysEqual(existingTags, nextTags)) continue;
+
+    const updated = await updateNoteTagsOnly(note, nextTags);
+    if (updated) updatedCount += 1;
+  }
+
+  if (!updatedCount) {
+    showToast("No tag changes were needed.", "warning", null, 2800);
+    return;
+  }
+
+  await ensureTagsInCatalog(addTags);
+  await refreshTagCatalog();
+  closeBulkTagsModal();
+  await loadNotes(getCurrentSearchTerm());
+  showToast(`Updated tags on ${updatedCount} note(s).`, "success");
 }
 
 async function openTagsManagerModal() {
@@ -1601,6 +1733,36 @@ async function saveNoteEdit(index, content, tags) {
     await loadNotes();
     showToast("Note updated.", "success");
   }
+}
+
+async function updateNoteTagsOnly(note, tags) {
+  if (!note) return false;
+
+  if (typeof STORAGE.updateNote === "function") {
+    const result = await STORAGE.updateNote(note, (existing) => ({
+      ...existing,
+      tags,
+      modifiedAt: new Date().toISOString(),
+    }));
+    return Boolean(result?.updated);
+  }
+
+  const hostname = new URL(note.url).hostname;
+  const existingNotes = await chrome.storage.local.get(hostname);
+  const notes = existingNotes[hostname] || [];
+  const noteIndex = notes.findIndex(
+    (entry) => entry.url === note.url && entry.createdAt === note.createdAt
+  );
+
+  if (noteIndex === -1) return false;
+
+  notes[noteIndex] = {
+    ...notes[noteIndex],
+    tags,
+    modifiedAt: new Date().toISOString(),
+  };
+  await chrome.storage.local.set({ [hostname]: notes });
+  return true;
 }
 
 async function deleteNote(index) {
@@ -2183,6 +2345,313 @@ function toggleActiveButton(activeId, inactiveIds) {
   );
 }
 
+function normalizeSearchMode(mode) {
+  return ["all", "text", "tags"].includes(mode) ? mode : "all";
+}
+
+function setSearchMode(mode) {
+  currentSearchMode = normalizeSearchMode(mode);
+  document.querySelectorAll("[data-search-mode]").forEach((button) => {
+    const isActive = button.dataset.searchMode === currentSearchMode;
+    button.classList.toggle("active", isActive);
+    button.setAttribute("aria-pressed", String(isActive));
+  });
+}
+
+function updateHeaderActionsState(notes = currentNotes) {
+  const resultCount = Array.isArray(notes) ? notes.length : 0;
+  const bulkTagsBtn = document.getElementById("bulkTagsBtn");
+  if (bulkTagsBtn) {
+    bulkTagsBtn.disabled = resultCount === 0;
+    bulkTagsBtn.title = resultCount
+      ? `Edit tags for ${resultCount} current result(s)`
+      : "No current results to edit";
+  }
+
+  const exportResultsBtn = document.querySelector('[data-export-scope="results"]');
+  if (exportResultsBtn) {
+    exportResultsBtn.disabled = resultCount === 0;
+  }
+}
+
+function getCurrentSearchTerm() {
+  return String(document.getElementById("searchInput")?.value || "");
+}
+
+function stripSearchQuotes(value) {
+  const trimmed = String(value || "").trim();
+  if (trimmed.startsWith('"') && trimmed.endsWith('"') && trimmed.length >= 2) {
+    return trimmed.slice(1, -1);
+  }
+  return trimmed;
+}
+
+function simpleNoteMatchesSearch(note, searchTerm, mode = currentSearchMode) {
+  const term = stripSearchQuotes(searchTerm).toLowerCase();
+  if (!term) return true;
+
+  const textMatch = normalizeNoteContent(note?.content).toLowerCase().includes(term);
+  const tagMatch = normalizeNoteTags(note?.tags).some((tag) => tag.toLowerCase().includes(term));
+
+  if (mode === "text") return textMatch;
+  if (mode === "tags") return tagMatch;
+  return textMatch || tagMatch;
+}
+
+function isAdvancedSearchQuery(searchTerm) {
+  const raw = String(searchTerm || "");
+  return /\b(?:AND|OR|NOT)\b|[()]/i.test(raw) || /\b(?:tag|text):/i.test(raw);
+}
+
+function tokenizeSearchExpression(query) {
+  const tokens = [];
+  const source = String(query || "");
+  let index = 0;
+
+  while (index < source.length) {
+    const char = source[index];
+
+    if (/\s/.test(char)) {
+      index += 1;
+      continue;
+    }
+
+    if (char === "(") {
+      tokens.push({ type: "lparen", value: char });
+      index += 1;
+      continue;
+    }
+
+    if (char === ")") {
+      tokens.push({ type: "rparen", value: char });
+      index += 1;
+      continue;
+    }
+
+    let value = "";
+    let inQuote = false;
+
+    while (index < source.length) {
+      const current = source[index];
+      if (current === '"') {
+        inQuote = !inQuote;
+        value += current;
+        index += 1;
+        continue;
+      }
+
+      if (!inQuote && (/\s/.test(current) || current === "(" || current === ")")) {
+        break;
+      }
+
+      value += current;
+      index += 1;
+    }
+
+    const trimmed = value.trim();
+    if (!trimmed) continue;
+
+    const upper = trimmed.toUpperCase();
+    if (upper === "AND" || upper === "OR" || upper === "NOT") {
+      tokens.push({ type: "operator", value: upper });
+    } else {
+      tokens.push({ type: "term", value: trimmed });
+    }
+  }
+
+  const withImplicitAnd = [];
+  tokens.forEach((token) => {
+    const previous = withImplicitAnd[withImplicitAnd.length - 1];
+    const needsImplicitAnd =
+      previous &&
+      (previous.type === "term" || previous.type === "rparen") &&
+      (token.type === "term" || token.type === "lparen" || token.value === "NOT");
+
+    if (needsImplicitAnd) {
+      withImplicitAnd.push({ type: "operator", value: "AND" });
+    }
+
+    withImplicitAnd.push(token);
+  });
+
+  return withImplicitAnd;
+}
+
+function buildSearchRpn(tokens) {
+  const output = [];
+  const operators = [];
+  const precedence = { OR: 1, AND: 2, NOT: 3 };
+  const rightAssociative = new Set(["NOT"]);
+
+  for (const token of tokens) {
+    if (token.type === "term") {
+      output.push(token);
+      continue;
+    }
+
+    if (token.type === "operator") {
+      while (operators.length) {
+        const top = operators[operators.length - 1];
+        if (top.type !== "operator") break;
+
+        const shouldPop = rightAssociative.has(token.value)
+          ? precedence[token.value] < precedence[top.value]
+          : precedence[token.value] <= precedence[top.value];
+
+        if (!shouldPop) break;
+        output.push(operators.pop());
+      }
+
+      operators.push(token);
+      continue;
+    }
+
+    if (token.type === "lparen") {
+      operators.push(token);
+      continue;
+    }
+
+    if (token.type === "rparen") {
+      let foundLeftParen = false;
+      while (operators.length) {
+        const top = operators.pop();
+        if (top.type === "lparen") {
+          foundLeftParen = true;
+          break;
+        }
+        output.push(top);
+      }
+
+      if (!foundLeftParen) {
+        return null;
+      }
+    }
+  }
+
+  while (operators.length) {
+    const top = operators.pop();
+    if (top.type === "lparen" || top.type === "rparen") {
+      return null;
+    }
+    output.push(top);
+  }
+
+  return output;
+}
+
+function resolveSearchTermMatch(note, rawTerm, defaultMode = currentSearchMode) {
+  const match = String(rawTerm || "").trim().match(/^(tag|text):(.*)$/i);
+  const fieldMode = match
+    ? match[1].toLowerCase() === "tag"
+      ? "tags"
+      : "text"
+    : defaultMode;
+  const value = stripSearchQuotes(match ? match[2] : rawTerm);
+
+  return simpleNoteMatchesSearch(note, value, fieldMode);
+}
+
+function evaluateAdvancedSearch(note, searchTerm, defaultMode = currentSearchMode) {
+  const tokens = tokenizeSearchExpression(searchTerm);
+  const rpn = buildSearchRpn(tokens);
+  if (!rpn?.length) return null;
+
+  const stack = [];
+  for (const token of rpn) {
+    if (token.type === "term") {
+      stack.push(resolveSearchTermMatch(note, token.value, defaultMode));
+      continue;
+    }
+
+    if (token.value === "NOT") {
+      if (stack.length < 1) return null;
+      stack.push(!stack.pop());
+      continue;
+    }
+
+    if (stack.length < 2) return null;
+    const right = stack.pop();
+    const left = stack.pop();
+    stack.push(token.value === "AND" ? left && right : left || right);
+  }
+
+  return stack.length === 1 ? stack[0] : null;
+}
+
+function noteMatchesSearch(note, searchTerm, mode = currentSearchMode) {
+  const trimmed = String(searchTerm || "").trim();
+  if (!trimmed) return true;
+
+  if (!isAdvancedSearchQuery(trimmed)) {
+    return simpleNoteMatchesSearch(note, trimmed, mode);
+  }
+
+  const advancedResult = evaluateAdvancedSearch(note, trimmed, mode);
+  if (typeof advancedResult === "boolean") {
+    return advancedResult;
+  }
+
+  return simpleNoteMatchesSearch(note, trimmed, mode);
+}
+
+function closeExportMenu() {
+  const menu = document.getElementById("exportMenu");
+  const button = document.getElementById("exportMenuBtn");
+  if (menu) menu.classList.remove("visible");
+  if (button) button.setAttribute("aria-expanded", "false");
+}
+
+function toggleExportMenu() {
+  const menu = document.getElementById("exportMenu");
+  const button = document.getElementById("exportMenuBtn");
+  if (!menu || !button) return;
+
+  const willOpen = !menu.classList.contains("visible");
+  menu.classList.toggle("visible", willOpen);
+  button.setAttribute("aria-expanded", String(willOpen));
+}
+
+function cloneNoteForTransfer(note) {
+  if (typeof structuredClone === "function") {
+    return structuredClone(note);
+  }
+
+  return JSON.parse(JSON.stringify(note));
+}
+
+function buildExportPayloadFromNotes(notes, meta = {}) {
+  const safeNotes = Array.isArray(notes)
+    ? notes
+        .map((note) => normalizeNoteForUi(note))
+        .filter((note) => note && note.url && note.content)
+    : [];
+
+  const payload = {};
+  safeNotes.forEach((note) => {
+    const bucketKey = getHostnameFromUrl(note.url) || "imported";
+    if (!Array.isArray(payload[bucketKey])) {
+      payload[bucketKey] = [];
+    }
+    payload[bucketKey].push(cloneNoteForTransfer(note));
+  });
+
+  const usedTags = collectTagsFromBuckets(payload);
+  if (usedTags.length) {
+    payload[TAGS_STORAGE_KEY] = usedTags;
+  }
+
+  const bucketCount = Object.keys(payload).filter((key) => Array.isArray(payload[key])).length;
+  payload.__siteNotesDataVersion__ = 1;
+  payload[EXPORT_META_KEY] = {
+    ...meta,
+    exportedAt: new Date().toISOString(),
+    noteCount: safeNotes.length,
+    bucketCount,
+  };
+
+  return { data: payload, noteCount: safeNotes.length, bucketCount };
+}
+
 function resetAllData() {
   if (!confirm("Reset all local data? A backup snapshot will be saved first.")) {
     return;
@@ -2214,18 +2683,174 @@ function resetAllData() {
   });
 }
 
-function exportData() {
+function getTransferScope(selectId, fallback = "all") {
+  const selected = String(document.getElementById(selectId)?.value || fallback);
+  return ["page", "domain", "all"].includes(selected) ? selected : fallback;
+}
+
+function getTransferScopeLabel(scope) {
+  switch (scope) {
+    case "page":
+      return "this site";
+    case "domain":
+      return "this domain";
+    case "results":
+      return "current results";
+    default:
+      return "all notes";
+  }
+}
+
+function isNoteBucketEntry(key, value) {
+  const metaKeys = new Set([
+    TAGS_STORAGE_KEY,
+    SETTINGS_STORAGE_KEY,
+    COPY_CONTEXT_STORAGE_KEY,
+    EXPORT_META_KEY,
+    "__siteNotesDataVersion__",
+    "__siteNotesBackupBeforeImport__",
+    "__siteNotesBackupBeforeReset__",
+  ]);
+
+  return !metaKeys.has(key) && Array.isArray(value);
+}
+
+function scopeMatchesNote(note, scope) {
+  if (!note || typeof note !== "object") return false;
+
+  switch (scope) {
+    case "page":
+      return Boolean(currentUrl) && noteAppliesToPage(note, currentUrl);
+    case "domain":
+      if (!currentHostname) return false;
+      if (noteUrlHasHostname(note.url, currentHostname)) return true;
+      return getLinkedPageUrls(note).some((url) => noteUrlHasHostname(url, currentHostname));
+    case "all":
+    default:
+      return true;
+  }
+}
+
+function collectTagsFromBuckets(data) {
+  const tags = new Set();
+
+  Object.entries(data || {}).forEach(([key, value]) => {
+    if (!isNoteBucketEntry(key, value)) return;
+    value.forEach((note) => {
+      normalizeNoteTags(note?.tags).forEach((tag) => tags.add(tag));
+    });
+  });
+
+  return Array.from(tags).sort((a, b) => a.localeCompare(b));
+}
+
+function buildScopedDataPayload(data, scope = "all") {
+  const source = data && typeof data === "object" ? data : {};
+  const scoped = {};
+  let noteCount = 0;
+  let bucketCount = 0;
+
+  Object.entries(source).forEach(([key, value]) => {
+    if (!isNoteBucketEntry(key, value)) return;
+
+    const matchingNotes = value.filter((note) => scopeMatchesNote(note, scope));
+    if (!matchingNotes.length) return;
+
+    scoped[key] = matchingNotes;
+    noteCount += matchingNotes.length;
+    bucketCount += 1;
+  });
+
+  const usedTags = collectTagsFromBuckets(scoped);
+  if (usedTags.length) {
+    scoped[TAGS_STORAGE_KEY] = usedTags;
+  } else if (scope === "all" && Array.isArray(source[TAGS_STORAGE_KEY])) {
+    scoped[TAGS_STORAGE_KEY] = Array.from(
+      new Set(source[TAGS_STORAGE_KEY].map((tag) => normalizeTag(tag)).filter(Boolean))
+    ).sort((a, b) => a.localeCompare(b));
+  }
+
+  if (scope === "all" && source[SETTINGS_STORAGE_KEY]) {
+    scoped[SETTINGS_STORAGE_KEY] = normalizeSettings(source[SETTINGS_STORAGE_KEY]);
+  }
+
+  scoped.__siteNotesDataVersion__ = Number(source.__siteNotesDataVersion__ || 1);
+  scoped[EXPORT_META_KEY] = {
+    scope,
+    exportedAt: new Date().toISOString(),
+    currentUrl: currentUrl || undefined,
+    currentHostname: currentHostname || undefined,
+    noteCount,
+    bucketCount,
+  };
+
+  return { data: scoped, noteCount, bucketCount };
+}
+
+function sanitizeFilenamePart(value, fallback) {
+  const cleaned = String(value || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return cleaned || fallback;
+}
+
+function buildExportFilename(scope) {
+  const datePart = new Date().toISOString().slice(0, 10);
+
+  if (scope === "page") {
+    return `sitenotes_${sanitizeFilenamePart(currentHostname, "site")}_site_${datePart}.json`;
+  }
+
+  if (scope === "domain") {
+    return `sitenotes_${sanitizeFilenamePart(currentHostname, "domain")}_domain_${datePart}.json`;
+  }
+
+  if (scope === "results") {
+    const searchFragment = sanitizeFilenamePart(getCurrentSearchTerm(), "results");
+    return `sitenotes_search_${searchFragment}_${datePart}.json`;
+  }
+
+  return `sitenotes_all_${datePart}.json`;
+}
+
+function exportData(scopeOverride = null) {
+  const scope = ["page", "domain", "results", "all"].includes(scopeOverride)
+    ? scopeOverride
+    : getTransferScope("exportScopeSelect", "all");
+  const scopeLabel = getTransferScopeLabel(scope);
+
+  if ((scope === "page" && !currentUrl) || (scope === "domain" && !currentHostname)) {
+    showToast(`Open a supported page before exporting ${scopeLabel}.`, "warning", null, 4200);
+    return;
+  }
+
   chrome.storage.local.get(null, (data) => {
-    const blob = new Blob([JSON.stringify(data, null, 2)], {
+    const scopedExport =
+      scope === "results"
+        ? buildExportPayloadFromNotes(currentNotes, {
+            scope,
+            viewMode,
+            searchMode: currentSearchMode,
+            searchTerm: getCurrentSearchTerm().trim(),
+          })
+        : buildScopedDataPayload(data, scope);
+
+    if (!scopedExport.noteCount) {
+      showToast(`No notes found for ${scopeLabel}.`, "warning", null, 4200);
+      return;
+    }
+
+    const blob = new Blob([JSON.stringify(scopedExport.data, null, 2)], {
       type: "application/json",
     });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = "sitenotes_backup.json";
+    a.download = buildExportFilename(scope);
     a.click();
     URL.revokeObjectURL(url);
-    showToast("Backup exported.", "success");
+    showToast(`Exported ${scopedExport.noteCount} note(s) for ${scopeLabel}.`, "success");
   });
 }
 
@@ -2324,6 +2949,7 @@ function validateImportPayload(data) {
     "__siteNotesLastCopyContext__",
     "__siteNotesBackupBeforeImport__",
     "__siteNotesBackupBeforeReset__",
+    EXPORT_META_KEY,
   ]);
 
   const errors = [];
@@ -2368,10 +2994,57 @@ function validateImportPayload(data) {
   };
 }
 
-function mergeImportData(existing, incoming) {
+function removeScopeFromExistingData(existing, scope) {
+  if (scope === "all") return {};
+
+  const reduced = {};
+
+  Object.entries(existing || {}).forEach(([key, value]) => {
+    if (!isNoteBucketEntry(key, value)) {
+      reduced[key] = value;
+      return;
+    }
+
+    const remaining = value.filter((note) => !scopeMatchesNote(note, scope));
+    if (remaining.length) {
+      reduced[key] = remaining;
+    }
+  });
+
+  return reduced;
+}
+
+function mergeImportData(existing, incoming, options = {}) {
   const merged = { ...existing };
+  const includeSettings = options.includeSettings !== false;
 
   Object.entries(incoming || {}).forEach(([key, value]) => {
+    if (key === EXPORT_META_KEY) return;
+
+    if (key === TAGS_STORAGE_KEY) {
+      const currentTags = Array.isArray(merged[key]) ? merged[key] : [];
+      const incomingTags = Array.isArray(value) ? value : [];
+      merged[key] = Array.from(
+        new Set([...currentTags, ...incomingTags].map((tag) => normalizeTag(tag)).filter(Boolean))
+      ).sort((a, b) => a.localeCompare(b));
+      return;
+    }
+
+    if (key === SETTINGS_STORAGE_KEY) {
+      if (includeSettings && value && typeof value === "object") {
+        merged[key] = normalizeSettings({ ...merged[key], ...value });
+      }
+      return;
+    }
+
+    if (
+      key === COPY_CONTEXT_STORAGE_KEY ||
+      key === "__siteNotesBackupBeforeImport__" ||
+      key === "__siteNotesBackupBeforeReset__"
+    ) {
+      return;
+    }
+
     if (!Array.isArray(value)) {
       merged[key] = value;
       return;
@@ -2390,6 +3063,12 @@ function mergeImportData(existing, incoming) {
     merged[key] = Array.from(byId.values());
   });
 
+  const usedTags = collectTagsFromBuckets(merged);
+  const currentCatalog = Array.isArray(merged[TAGS_STORAGE_KEY]) ? merged[TAGS_STORAGE_KEY] : [];
+  merged[TAGS_STORAGE_KEY] = Array.from(
+    new Set([...currentCatalog, ...usedTags].map((tag) => normalizeTag(tag)).filter(Boolean))
+  ).sort((a, b) => a.localeCompare(b));
+
   return merged;
 }
 
@@ -2398,6 +3077,14 @@ function importData(e) {
   if (!file) return;
 
   const mode = document.getElementById("importModeSelect")?.value || "merge";
+  const scope = getTransferScope("importScopeSelect", "all");
+  const scopeLabel = getTransferScopeLabel(scope);
+
+  if ((scope === "page" && !currentUrl) || (scope === "domain" && !currentHostname)) {
+    showToast(`Open a supported page before importing for ${scopeLabel}.`, "warning", null, 4200);
+    e.target.value = "";
+    return;
+  }
 
   const reader = new FileReader();
   reader.onload = async (event) => {
@@ -2410,11 +3097,19 @@ function importData(e) {
         return;
       }
 
+      const scopedImport = buildScopedDataPayload(validation.normalized, scope);
+      if (!scopedImport.noteCount && scope !== "all") {
+        showToast(`No notes for ${scopeLabel} were found in this backup.`, "warning", null, 4600);
+        return;
+      }
+
       if (mode === "dry-run") {
-        const bucketCount = Object.entries(validation.normalized).filter(([, value]) =>
-          Array.isArray(value)
-        ).length;
-        showToast(`Dry run passed. ${bucketCount} note bucket(s) validated.`, "success", null, 4200);
+        showToast(
+          `Dry run passed. ${scopedImport.noteCount} note(s) across ${scopedImport.bucketCount} bucket(s) ready for ${scopeLabel}.`,
+          "success",
+          null,
+          4600
+        );
         return;
       }
 
@@ -2423,12 +3118,18 @@ function importData(e) {
         __siteNotesBackupBeforeImport__: {
           createdAt: new Date().toISOString(),
           mode,
+          scope,
           data: existing,
         },
       });
 
       if (mode === "replace") {
-        if (!confirm("Replace mode will overwrite all current data.")) {
+        const replaceMessage =
+          scope === "all"
+            ? "Replace mode will overwrite all current data."
+            : `Replace mode will overwrite ${scopeLabel} in your current notes.`;
+
+        if (!confirm(replaceMessage)) {
           showToast("Import cancelled.", "warning");
           return;
         }
@@ -2439,10 +3140,21 @@ function importData(e) {
           return;
         }
 
-        await storageClear();
-        await storageSet(validation.normalized);
+        if (scope === "all") {
+          await storageClear();
+          await storageSet(scopedImport.data);
+        } else {
+          const reducedExisting = removeScopeFromExistingData(existing, scope);
+          const merged = mergeImportData(reducedExisting, scopedImport.data, {
+            includeSettings: false,
+          });
+          await storageClear();
+          await storageSet(merged);
+        }
       } else {
-        const merged = mergeImportData(existing, validation.normalized);
+        const merged = mergeImportData(existing, scopedImport.data, {
+          includeSettings: scope === "all",
+        });
         await storageSet(merged);
       }
 
@@ -2451,9 +3163,11 @@ function importData(e) {
       await refreshTagCatalog();
       await loadNotes();
       closeSettingsModal();
-      showToast(`Backup imported (${mode}).`, "success");
+      showToast(`Imported ${scopedImport.noteCount} note(s) (${mode}, ${scopeLabel}).`, "success");
     } catch (error) {
       showToast("Invalid backup file.", "error");
+    } finally {
+      e.target.value = "";
     }
   };
   reader.readAsText(file);
